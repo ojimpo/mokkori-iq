@@ -47,7 +47,7 @@ PATH=".venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeed
 PATH=".venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
 PATH=".venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
 .venv/bin/python tools/flash_dump.py --selftest 5         # ベンチ往復テスト
-.venv/bin/python tools/flash_dump.py --dump -o data/swim/session01.csv   # 実記録の吸い出し
+.venv/bin/python tools/flash_dump.py --pull data/swim/session01.csv   # 1泳ぎ吸い出し→保存→消去
 ```
 
 ## アーキテクチャ
@@ -74,12 +74,15 @@ PATH=".venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeed
 LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（acc±8g, gyro±2000dps）。`tools/serial_capture.py` で検証。
 
 ### firmware/flash_logger
-プール実データ採取用。起動時の VBUS で自動モード切替: **電池駆動=記録 / USB接続=コンソール**。
-- 記録: チップ全消去後、6軸 int16 を 256B ページ（magic/count/seq + 20 sample）で QSPI に連続書込。52Hz で約52分
-- LED: 消去=青 / 記録=緑点滅 / コンソール=赤 / 満杯=赤点灯
-- コンソールコマンド: `INFO` / `DUMP` / `ERASE` / `TESTLOG <sec>`（USB中でも記録、ベンチ往復用）/ `HELP`
-- `tools/flash_dump.py` で吸い出し→生int16をg/dpsに変換しCSV化。`--selftest N` で消去→N秒記録→DUMP→集計
-- 検証済(2026-06-03): TESTLOG 5s→260サンプル(=52×5)、|acc|=1.03g、往復整合
+プール実データ採取用。**VBUS にライブ追従**（リセット不要）: USB抜く=記録 / USB挿す=コンソール。
+これで「短く泳ぐ→更衣室でMacに挿して吸い出し→また泳ぐ」ループが成立。
+- 記録は**追記方式**。消去は明示 `ERASE` のみ（USBを抜いても自動消去しない＝うっかりデータ消失なし）
+- 6軸 int16 を 256B ページ（magic 0xA55A/count/seq + 20 sample）で QSPI に書込。52Hz で約52分／消去まで
+- LED: 消去=青 / 記録=緑点滅 / コンソール=赤 / 満杯=赤点滅
+- コンソールコマンド: `INFO` / `DUMP` / `ERASE` / `TESTLOG <sec>`（USB中でも追記、ベンチ用）/ `HELP`
+- `tools/flash_dump.py`: `--pull [PATH]`（DUMP→CSV保存→ERASE を1コマンド＝1泳ぎ分。PATH省略で data/swim/ に自動命名）/
+  `--info` / `--erase` / `--testlog N` / `--selftest N`（ベンチ往復）。生int16を g/dps に変換
+- 検証済(2026-06-03): TESTLOG 2s×2で 105→210（追記）、`--pull` で保存＆消去、|acc|=1.03g、往復整合
 
 ### 次段
 プールで股間装着の実データ採取 → Phase 0 パイプラインに取込 → 検出器を実信号で再チューニング → 検出器の C 移植。

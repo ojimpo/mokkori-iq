@@ -3,26 +3,28 @@
  *
  * Records the onboard LSM6DS3TR-C 6-axis IMU to the 2 MB QSPI flash so we can
  * collect real crotch-mounted swimming data (no host needed in the pool), then
- * retrieve it over USB at the desk.
+ * retrieve it over USB at the desk / changing room.
  *
- * Mode is chosen automatically at boot from USB VBUS:
- *   - on battery (no VBUS) -> LOG mode: erase flash, then stream IMU to flash
- *     until full or power-off. Slide switch on the LiPo is the on/off control.
- *   - on USB  (VBUS present) -> CONSOLE mode: never logs; accepts commands so
- *     plugging in is always safe.
+ * The mode follows USB VBUS *live* (no reset needed), which matches the
+ * "swim a little -> plug into the laptop -> pull & clear -> swim again" loop:
+ *   - USB unplugged (battery) -> LOG: append IMU samples to the flash.
+ *   - USB plugged            -> CONSOLE: never logs, accepts commands, so
+ *                               plugging in is always safe and ready to dump.
  *
- * Storage: raw int16 sensor counts, packed into 256-byte pages:
+ * Storage is append-only; the flash is cleared ONLY by an explicit ERASE, so
+ * unplugging to swim again never destroys data. Samples are raw int16 sensor
+ * counts packed into 256-byte pages:
  *     [0:2] magic 0xA55A   [2:4] sample count (1..20)   [4:6] page seq
  *     [6:8] reserved       [8:248] 20 samples x (ax,ay,az,gx,gy,gz) int16 LE
- * The flash is fully erased before a session, so the log ends at the first page
- * whose magic isn't 0xA55A. Host-side tools/flash_dump.py pulls the stream and
- * converts the raw counts to g / deg-per-second.
+ * The log ends at the first page whose magic isn't 0xA55A (erased = 0xFFFF).
+ * Host-side tools/flash_dump.py pulls the stream and converts the raw counts
+ * to g / deg-per-second.
  *
  * Console commands (newline-terminated, CONSOLE mode):
  *   INFO            print header + recorded sample/page count + duration
  *   DUMP            stream the recorded samples as raw bytes (see protocol)
- *   ERASE           erase the whole flash
- *   TESTLOG <sec>   record <sec> seconds now (even on USB) -- bench round-trip
+ *   ERASE           erase the whole flash (the only way data is cleared)
+ *   TESTLOG <sec>   append <sec> seconds now (even on USB) -- bench round-trip
  *   HELP            list commands
  */
 #include "LSM6DS3.h"
@@ -31,9 +33,9 @@
 #include <Adafruit_SPIFlash.h>
 
 // ---- sensor configuration (kept in sync with the on-flash data) -----------
-static const uint16_t ODR_HZ       = 52;     // sample rate
-static const uint16_t ACCEL_FS_G   = 8;      // +/- g
-static const uint16_t GYRO_FS_DPS  = 2000;   // +/- deg/s
+static const uint16_t ODR_HZ      = 52;      // sample rate
+static const uint16_t ACCEL_FS_G  = 8;       // +/- g
+static const uint16_t GYRO_FS_DPS = 2000;    // +/- deg/s
 
 // ---- flash page format ----------------------------------------------------
 static const uint32_t PAGE_SIZE        = 256;
@@ -44,8 +46,10 @@ LSM6DS3 imu(I2C_MODE, 0x6A);
 Adafruit_FlashTransport_QSPI flashTransport;     // uses the variant's QSPI pins
 Adafruit_SPIFlash flash(&flashTransport);
 
-static bool console_mode = false;
+enum Mode { M_BOOT, M_CONSOLE, M_LOGGING, M_FULL };
+static Mode g_mode = M_BOOT;
 static bool g_flash_ok = false;
+static bool g_imu_ok = false;
 static uint32_t g_jedec = 0;
 
 // --- USB VBUS: present means we're plugged into a host / charger -----------
@@ -60,31 +64,33 @@ static void led(bool r, bool g, bool b) {
   digitalWrite(LED_BLUE,  b ? LOW : HIGH);
 }
 
-// --- scan the log: count valid pages / samples, return bytes end address ----
-static void scan_log(uint32_t *out_pages, uint32_t *out_samples) {
-  uint32_t addr = 0, pages = 0, samples = 0;
+// --- scan the log: count valid pages / samples and the next free address ----
+// End of log = first page whose magic isn't ours (erased flash reads 0xFFFF).
+// Partial pages (count < 20) are allowed mid-log so sessions can be appended.
+static void scan_log(uint32_t *out_pages, uint32_t *out_samples,
+                     uint32_t *out_end) {
+  uint32_t addr = 0, pages = 0, samples = 0, size = flash.size();
   uint8_t hdr[8];
-  uint32_t size = flash.size();
   while (addr + PAGE_SIZE <= size) {
     flash.readBuffer(addr, hdr, 8);
     uint16_t magic;
     memcpy(&magic, hdr, 2);
-    if (magic != PAGE_MAGIC) break;            // erased / end of log
+    if (magic != PAGE_MAGIC) break;             // erased / end of log
     uint16_t count;
     memcpy(&count, hdr + 2, 2);
-    if (count == 0 || count > SAMPLES_PER_PAGE) break;
+    if (count == 0 || count > SAMPLES_PER_PAGE) break;   // corrupt -> stop
     pages++;
     samples += count;
     addr += PAGE_SIZE;
-    if (count < SAMPLES_PER_PAGE) break;        // partial page = last page
   }
-  *out_pages = pages;
-  *out_samples = samples;
+  if (out_pages) *out_pages = pages;
+  if (out_samples) *out_samples = samples;
+  if (out_end) *out_end = addr;
 }
 
 static void print_info() {
   uint32_t pages, samples;
-  scan_log(&pages, &samples);
+  scan_log(&pages, &samples, NULL);
   float secs = (float)samples / (float)ODR_HZ;
   Serial.println("# mokkori flash logger v1");
   Serial.print("# odr_hz="); Serial.print(ODR_HZ);
@@ -104,7 +110,7 @@ static void print_info() {
 //            "\nDUMP_END\n".  Each sample = ax,ay,az,gx,gy,gz int16 LE.
 static void dump_log() {
   uint32_t pages, samples;
-  scan_log(&pages, &samples);
+  scan_log(&pages, &samples, NULL);
   Serial.print("DUMP_BEGIN ");
   Serial.print(samples);
   Serial.println(" 12");
@@ -125,20 +131,19 @@ static void dump_log() {
   Serial.println("DUMP_END");
 }
 
-// --- record to flash. max_ms==0 => until full (or VBUS lost on battery) -----
-static void run_log(uint32_t max_ms, bool stop_on_vbus) {
-  led(0, 0, 1);                       // blue: erasing
-  flash.eraseChip();
-  flash.waitUntilReady();
-
+// --- append samples to the flash (never erases) ----------------------------
+// Returns true if the flash filled up. Stops when: time limit hit, flash full,
+// or (stop_on_vbus) USB is plugged in.
+static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
+  uint32_t pages, samples, addr;
+  scan_log(&pages, &samples, &addr);            // append after existing data
   uint32_t size = flash.size();
-  uint32_t addr = 0;
-  uint16_t seq = 0;
+  uint16_t seq = (uint16_t)pages;
+
   uint8_t buf[PAGE_SIZE];
   uint16_t n = 0;
-
-  memset(buf, 0, PAGE_SIZE);
   uint16_t magic = PAGE_MAGIC;
+  memset(buf, 0, PAGE_SIZE);
   memcpy(buf, &magic, 2);
   memcpy(buf + 4, &seq, 2);
 
@@ -174,25 +179,27 @@ static void run_log(uint32_t max_ms, bool stop_on_vbus) {
       memset(buf, 0, PAGE_SIZE);
       memcpy(buf, &magic, 2);
       memcpy(buf + 4, &seq, 2);
-      led(0, (seq & 1), 0);            // blink green while logging
+      led(0, (seq & 1), 0);                      // blink green while logging
     }
   }
 
-  if (n > 0) {                          // flush partial final page
+  if (n > 0) {                                   // flush partial final page
     memcpy(buf + 2, &n, 2);
     flash.writeBuffer(addr, buf, PAGE_SIZE);
-    seq++;
   }
-  led(full ? 1 : 0, full ? 0 : 1, 0);  // red solid if full, else green
+  return full;
 }
 
 static void print_help() {
   Serial.println("# commands: INFO | DUMP | ERASE | TESTLOG <sec> | HELP");
 }
 
-// --- console command handling ----------------------------------------------
-static char cmd[32];
-static uint8_t cmd_len = 0;
+static void do_erase() {
+  led(0, 0, 1);                                  // blue: erasing
+  flash.eraseChip();
+  flash.waitUntilReady();
+  led(1, 0, 0);
+}
 
 static void handle_command(char *line) {
   if (strncmp(line, "INFO", 4) == 0) {
@@ -200,23 +207,34 @@ static void handle_command(char *line) {
   } else if (strncmp(line, "DUMP", 4) == 0) {
     dump_log();
   } else if (strncmp(line, "ERASE", 5) == 0) {
-    led(0, 0, 1);
-    flash.eraseChip();
-    flash.waitUntilReady();
-    led(1, 0, 0);
+    do_erase();
     Serial.println("ERASED");
   } else if (strncmp(line, "TESTLOG", 7) == 0) {
     int sec = atoi(line + 7);
     if (sec <= 0) sec = 5;
     Serial.print("# logging "); Serial.print(sec); Serial.println("s ...");
-    run_log((uint32_t)sec * 1000UL, false);
-    led(1, 0, 0);                       // back to console (red)
+    log_session((uint32_t)sec * 1000UL, false);
+    led(1, 0, 0);
     print_info();
   } else if (strncmp(line, "HELP", 4) == 0) {
     print_help();
   } else if (line[0] != '\0') {
     Serial.println("# ? (HELP)");
   }
+}
+
+static char cmd[32];
+static uint8_t cmd_len = 0;
+
+static void enter_console() {
+  g_mode = M_CONSOLE;
+  led(1, 0, 0);                                  // red: console / idle
+  cmd_len = 0;
+  Serial.println("# mokkori flash logger v1 (CONSOLE -- on USB)");
+  if (!g_imu_ok) Serial.println("# WARN: IMU init failed");
+  if (!g_flash_ok) Serial.println("# WARN: flash init failed");
+  print_help();
+  print_info();
 }
 
 void setup() {
@@ -235,51 +253,42 @@ void setup() {
 #endif
   imu.settings.accelEnabled = 1;
   imu.settings.accelRange = ACCEL_FS_G;
-  imu.settings.accelSampleRate = 104;       // internal ODR >= output rate
+  imu.settings.accelSampleRate = 104;            // internal ODR >= output rate
   imu.settings.gyroEnabled = 1;
   imu.settings.gyroRange = GYRO_FS_DPS;
   imu.settings.gyroSampleRate = 104;
-  bool imu_ok = (imu.begin() == 0);
+  g_imu_ok = (imu.begin() == 0);
 
   g_flash_ok = flash.begin();
-  if (!g_flash_ok) {                          // fall back to explicit device
-    static const SPIFlash_Device_t dev = P25Q16H;
+  if (!g_flash_ok) {                             // QSPI autodetect misses the
+    static const SPIFlash_Device_t dev = P25Q16H;  // XIAO's P25Q16H -> explicit
     g_flash_ok = flash.begin(&dev, 1);
   }
   g_jedec = flash.getJEDECID();
 
-  console_mode = vbus_present();
-
-  if (console_mode) {
-    uint32_t t0 = millis();
-    while (!Serial && (millis() - t0) < 3000) {
-    }
-    led(1, 0, 0);                            // red: console/idle
-    Serial.println("# mokkori flash logger v1 (CONSOLE -- on USB)");
-    if (!imu_ok) Serial.println("# WARN: IMU init failed");
-    if (!g_flash_ok) Serial.println("# WARN: flash init failed");
-    print_help();
-    print_info();
-  } else {
-    // Battery: log until full or power-off. Stop if USB shows up (bench edge).
-    run_log(0, true);
-  }
+  // Mode is decided live in loop() from VBUS, so plug/unplug just works.
 }
 
 void loop() {
-  if (!console_mode) {
-    delay(100);                              // logging finished -> idle
-    return;
-  }
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    if (c == '\r') continue;
-    if (c == '\n') {
-      cmd[cmd_len] = '\0';
-      handle_command(cmd);
-      cmd_len = 0;
-    } else if (cmd_len < sizeof(cmd) - 1) {
-      cmd[cmd_len++] = c;
+  if (vbus_present()) {
+    if (g_mode != M_CONSOLE) enter_console();
+    while (Serial.available()) {
+      char c = (char)Serial.read();
+      if (c == '\r') continue;
+      if (c == '\n') {
+        cmd[cmd_len] = '\0';
+        handle_command(cmd);
+        cmd_len = 0;
+      } else if (cmd_len < sizeof(cmd) - 1) {
+        cmd[cmd_len++] = c;
+      }
     }
+  } else if (g_mode == M_FULL) {
+    led(1, 0, 0); delay(200); led(0, 0, 0); delay(200);   // blink: flash full
+  } else {
+    g_mode = M_LOGGING;
+    led(0, 1, 0);
+    bool full = log_session(0, true);            // until USB appears or full
+    if (full) g_mode = M_FULL;
   }
 }

@@ -15,8 +15,10 @@ Usage:
     python tools/flash_dump.py --selftest 5        # erase+testlog+dump+report
 """
 import argparse
+import datetime
 import glob
 import math
+import os
 import statistics as st
 import struct
 import sys
@@ -168,6 +170,10 @@ def main():
     ap.add_argument("--erase", action="store_true")
     ap.add_argument("--testlog", type=int, metavar="SEC")
     ap.add_argument("--dump", action="store_true")
+    ap.add_argument("--pull", nargs="?", const="__AUTO__", default=None,
+                    metavar="PATH",
+                    help="one swim: DUMP to CSV then ERASE. Omit PATH to "
+                         "auto-name under data/swim/.")
     ap.add_argument("--selftest", type=int, metavar="SEC",
                     help="erase, log SEC s, dump and report (bench round-trip)")
     args = ap.parse_args()
@@ -177,6 +183,24 @@ def main():
         sys.exit("no usbmodem serial port found")
     ser = open_port(port, args.baud)
     time.sleep(0.3)
+
+    if args.pull is not None:
+        path = args.pull
+        if path == "__AUTO__":
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join("data", "swim", f"swim_{stamp}.csv")
+        info = cmd_info(ser, echo=False)
+        rows = cmd_dump(ser, info)
+        odr = int(info.get("odr_hz", 52))
+        if not rows:
+            print("# no data on device -- nothing to pull (device left as-is)")
+            return
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        save_csv(rows, odr, path)
+        cmd_erase(ser)
+        summarize(rows, odr)
+        print(f"# pulled {len(rows)} samples and erased device")
+        return
 
     if args.selftest is not None:
         print(f"# self-test on {port}: erase -> testlog {args.selftest}s -> dump")
