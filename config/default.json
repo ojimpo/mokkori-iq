@@ -1,0 +1,29 @@
+{
+  "fs_hz": 30.0,
+  "preprocess": {
+    "lowpass_enabled": true,
+    "lowpass_cutoff_hz": 4.0,
+    "lowpass_b": [0.1084474389, 0.2168948778, 0.1084474389],
+    "lowpass_a": [1.0, -0.8772706323, 0.3110603879],
+    "activity_window_s": 2.2
+  },
+  "detector": {
+    "swim_ref_attack": 0.5,
+    "swim_ref_release": 0.004,
+    "swim_ref_init": 5.0,
+    "swim_ref_min": 1.0,
+    "dip_enter_ratio": 0.40,
+    "dip_exit_ratio": 0.70,
+    "dip_abs_floor": 2.8,
+    "min_still_s": 0.6,
+    "max_still_s": 4.0,
+    "require_spike": false,
+    "spike_abs": 20.0,
+    "refractory_s": 12.0,
+    "confirm_swim_s": 0.6,
+    "confirm_timeout_s": 1.5
+  },
+  "matching": {
+    "tolerance_s": 1.0
+  }
+}
