@@ -27,6 +27,30 @@ def load_config(path=None):
         return json.load(f)
 
 
+def make_config_for_fs(fs, base_config=None):
+    """Return a copy of the config adapted to sampling rate `fs` (Hz).
+
+    The low-pass biquad coeffs in default.json are precomputed for 30 Hz; this
+    re-designs them for the config's lowpass_cutoff_hz at the new rate so the
+    detector runs natively on, e.g., the 52 Hz device capture. Window lengths
+    are specified in seconds, so they carry over unchanged.
+    """
+    import copy
+
+    from scipy.signal import butter
+
+    cfg = copy.deepcopy(base_config if base_config is not None else load_config())
+    cfg["fs_hz"] = float(fs)
+    pre = cfg["preprocess"]
+    if pre.get("lowpass_enabled", False):
+        cutoff = float(pre.get("lowpass_cutoff_hz", 4.0))
+        wn = min(0.99, cutoff / (fs / 2.0))
+        b, a = butter(2, wn, btype="low")
+        pre["lowpass_b"] = [float(x) for x in b]
+        pre["lowpass_a"] = [float(x) for x in a]
+    return cfg
+
+
 # --------------------------------------------------------------------------
 # normalization
 # --------------------------------------------------------------------------

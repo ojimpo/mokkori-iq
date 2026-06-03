@@ -22,6 +22,9 @@ import pandas as pd
 
 FS_HZ = 30.0  # dataset sampling rate (resampled)
 
+G0 = 9.80665           # standard gravity: convert g -> m/s^2
+DEG2RAD = np.pi / 180.0  # deg/s -> rad/s
+
 LABEL_NAMES = {
     0: "null",
     1: "freestyle",
@@ -109,6 +112,50 @@ def load_session(path):
         "gyro_norm": gyro_norm,
         "label": label,
         "fs": FS_HZ,
+        "path": path,
+    }
+
+
+def load_swim_csv(path, fs=None, to_si=True, gt_turns=None):
+    """Load a mokkori flash-logger capture (tools/flash_dump.py CSV) into the
+    same session dict shape as load_session(), so the Phase 0 pipeline applies.
+
+    Our logger stores accel in g and gyro in deg/s; Brunner -- and therefore the
+    detector thresholds (dip_abs_floor, spike_abs) -- use Android units, i.e.
+    m/s^2 and rad/s. With to_si=True (default) we convert so the existing config
+    and detector carry over directly. (Real device is crotch-mounted at ~52 Hz,
+    vs Brunner's wrist at 30 Hz -- expect the morphology to differ.)
+
+    path     : CSV with columns idx,t,ax,ay,az,gx,gy,gz
+    fs       : sampling rate (Hz); if None, inferred from the median t step
+    gt_turns : optional iterable of ground-truth turn times (s); the nearest
+               sample to each is labelled 5 (turn) so evaluate.py can match
+    """
+    df = pd.read_csv(path)
+    t = df["t"].to_numpy(dtype=np.float64)
+    acc = df[["ax", "ay", "az"]].to_numpy(dtype=np.float64)
+    gyro = df[["gx", "gy", "gz"]].to_numpy(dtype=np.float64)
+    if to_si:
+        acc = acc * G0
+        gyro = gyro * DEG2RAD
+    if fs is None:
+        dt = np.diff(t)
+        med = float(np.median(dt)) if len(dt) else 0.0
+        fs = 1.0 / med if med > 0 else 52.0
+    acc_norm = np.sqrt(np.square(acc).sum(axis=1))
+    gyro_norm = np.sqrt(np.square(gyro).sum(axis=1))
+    label = np.zeros(len(t), dtype=np.int8)
+    if gt_turns is not None and len(t):
+        for tt in gt_turns:
+            label[int(np.argmin(np.abs(t - tt)))] = 5
+    return {
+        "t": t,
+        "acc": acc,
+        "gyro": gyro,
+        "acc_norm": acc_norm,
+        "gyro_norm": gyro_norm,
+        "label": label,
+        "fs": float(fs),
         "path": path,
     }
 
