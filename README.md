@@ -1,172 +1,157 @@
-# mokkori-iq: 水泳ターン検知アルゴリズム（Phase 0）
+# mokkori-iq
 
-水着の中に仕込む DIY ウェアラブルスイムトラッカー「mokkori-iq」のターン検知アルゴリズムを、公開データセットで開発・検証するプロジェクト。
+水着の股間に仕込む DIY スイムトラッカー。自由形のラップ・距離・ストローク率を記録し、
+泳ぎながら 100m ごとに振動で知らせ、上がったらスマホ経由で Strava に上げる、ための小型デバイスを自作するプロジェクト。
+デバイスは股間（仙骨付近）に装着する。
 
-## 背景・動機
+---
 
-日本の市民プールでは Garmin 等のスマートウォッチを着けて泳ぐことが禁止されている。
-水着に仕込める小型デバイス（Seeed XIAO nRF52840 Sense, 6軸IMU内蔵）で
-スイムログ（ラップ数・ラップタイム・距離）を記録し、Strava にアップロードしたい。
-さらに泳いでいる最中に ERM 振動モーターで距離通知（100mごと等）を行う。
+## なぜ作るか
 
-装着位置は股間（仙骨付近）。泳法は自由形（クロール）のみ、ターン方式はタッチターン
-（壁に足をついて反転して蹴り出す。フリップターン/前転はしない）。
+日本の市民プールの多くは Garmin 等のスマートウォッチを着けて泳ぐのを禁止している。
+だが泳いだログ（何本泳いだか・距離・ペース）は取りたいし、Strava にも上げたい。
 
-## Phase 0 のゴール
+そこで水着に仕込める小さなデバイスを自作する。手首が使えないので股間に着ける。
+水着のインナーに収まる小型 IMU（Seeed XIAO nRF52840 Sense, 6軸）なら、見た目に出さずに泳げる。
+ブログの代わりに、コードと README で発信するスタイルで進めている。
 
-プールに行く前に、公開データセット（Brunner et al., ISWC 2019）を使って
-Python でターン検知アルゴリズムを開発・検証する。
-最終的に Arduino/C（Cortex-M4, 256KB RAM）に移植するため、
-TFLite/機械学習ではなく *閾値ベースのヒューリスティック* をまず作る。
+---
 
-## データセット
-
-[Brunner et al. "Swimming Style Recognition and Lane Counting Using a Smartwatch"](https://github.com/brunnergino/swimming-recognition-lap-counting)
-
-- 40人分のスマートウォッチIMUデータ（手首装着、Android TYPE_ACCELEROMETER）
-- 加速度・ジャイロ・磁気・気圧・照度、30Hz リサンプル済み
-- ラベル: 0=null, 1=freestyle, 2=breaststroke, 3=backstroke, 4=butterfly, 5=turn
-- 自由形: 92セッション / 30被験者 / 310ターン
-
-*注意*: 本デバイスの装着位置（股間）とデータセットの装着位置（手首）は異なる。
-このデータでの精度に固執するより、位置非依存で汎用的なアルゴリズム構造を優先した。
-
-## アルゴリズム
-
-### 核心の発見: ターンの信号 signature
-
-データ探索（`analysis/findings.md`）から、ターンは装着位置・泳法を問わず
-以下の共通 signature を持つことを確認した:
-
-1. 定常ストローク（高い活動量）
-2. 壁タッチ/グライドで *活動量が泳ぎの約1/10に急落*（静止区間、中央値1.27秒）
-3. 壁キックで再加速
-
-この「低活動の谷」は全4泳法のターンに存在し、98%のターンで検出可能。
-
-### 検出器: Causal 有限状態機械
+## 完成形（目指すシステム）
 
 ```
-SWIM ──activity<thr_low──▶ DIP ──activity>thr_high & valid──▶ CONFIRM ──sustained swim──▶ EMIT
-                            │                                    │
-                            ├──dip too long──▶ REST              ├──dips again──▶ DIP (discard)
-                            │                                    │
-                        REST ──activity>thr_high──▶ SWIM         └──timeout──▶ SWIM (discard)
+   泳ぐ                  100m ごとに              上がる            スマホで
+ ┌────────┐  記録   ┌──────────────┐  振動  ┌───────┐  BLE  ┌──────────┐  →  Strava
+ │ 股間IMU │ ──────▶ │ オンデバイス │ ─────▶ │ 触覚  │ ────▶ │ アプリ   │
+ │ 6軸/52Hz│         │ 壁検出・集計 │  通知  │ で把握│ 吸出  │ ログ閲覧 │
+ └────────┘         └──────────────┘        └───────┘       └──────────┘
 ```
 
-*SWIM*: 泳いでいる状態。活動量（acc_norm の移動標準偏差）が閾値を下回ると DIP へ。
+ひとつの泳ぎセッションがこう流れるのが完成形:
 
-*DIP*: 壁タッチ候補。静止区間の最小活動点を追跡。
-活動量が回復すれば CONFIRM へ（条件: 最小継続時間を満たし、不応期外）。
-長すぎれば REST（休憩）と判定し破棄。
+1. **ロガー** — 股間の IMU が自由形のラップ・距離・ストローク率（SPM）をオンデバイスで記録する。
+   スマホもスマートウォッチも水に持ち込まず、デバイスひとつで完結する。
+2. **リアルタイム触覚通知** — 泳ぎながら 100m ごとに股間の振動モーターで知らせる。
+   壁で足をついた瞬間に振動が届くので、休むか続けるかをその場で判断できる。
+3. **水上で吸い出し** — 上がったら BLE でスマホへ記録を送る
+   （水中は 2.4GHz が吸収されるので BLE は水上専用）。
+4. **スマホアプリ → Strava** — ラップログを閲覧し、Strava にアップロードする。
 
-*CONFIRM*: ターン候補の検証。泳ぎが持続的に再開すればターンを確定して発報。
-再び低下すればセット終わりと判断し破棄（end-of-set の誤検出を防ぐ核心）。
+ハードは水着に仕込みやすい防水筐体にパッケージングする。
 
-*REST*: 休憩中。活動量が戻れば SWIM へ（発報なし）。
+---
 
-### 適応閾値
+## 仕組み（壁検出 = 重力オリエンテーション）
 
-閾値は「最近の泳ぎ活動」のピークフォロワー（fast attack / slow release）に対する
-比率で設定。装着位置・被験者で絶対スケールが変わっても追従する
-（Phase 1 で股間装着に移っても効く設計）。
+距離とラップの肝は壁（ターン）をどう数えるか。このデバイスは重力ベクトルの z 成分で壁を取る。
 
-### MCU 移植性
+この泳者はクイックターンをせず、毎回プールの底に足をついて立ってから壁を蹴る（オープンターン）。
+立つと股間デバイスの体軸が水平（伏せ泳ぎ）から垂直に変わり、重力 z が 泳ぎ -7.5 ↔ 立位 +9.5 m/s² と振れる。
+この振れが、最も明確で曖昧さの少ない壁シグネチャになる。
 
-- コアの `update()` は純粋なスカラ演算（for文 + 基本四則 + sqrt）で C に直接変換可能
-- メモリ: リングバッファ（66サンプル = 2.2秒分）+ biquad状態2変数 + FSM状態変数数個
-- 因果的（causal）: 未来のデータを一切参照しない
-- パラメータは `config/default.json` に外出し（Phase 1 で自分のデータに合わせて調整）
-
-## 評価結果
-
-### 自由形（主評価、30被験者 / 92セッション / 310ターン）
-
-| 指標 | 値 |
+| 信号 | 意味 |
 |---|---|
-| Precision | 0.646 |
-| Recall | 0.635 |
-| F1 | 0.641 |
-| ラップ数 完全一致 | 47.8% |
-| ラップ数 +-1以内 | 64.1% |
-| ラップタイム MAE | 0.67秒 |
-| 累積ドリフト | 0.61秒 |
+| gz（acc_z の causal EMA）< -2 | 伏せて泳いでいる |
+| gz > +5（ピーク） | 直立＝壁で足をついて立っている＝壁1枚 |
+| 立位 7〜17秒 ＋ トントン | 100m 境界（数秒静止して股間を3タップ） |
+| 立位 90秒超 | ハーフ間のベンチ長休憩 |
 
-### 他泳法（参考、自由形用チューニングのまま）
+立位エピソードの継続時間で「100m 途中のターン（約3秒）」と「100m 境界（約7〜17秒）」が分離できる。
+トントンは境界で股間を3回タップする自前のマーカーで、立位を条件にすると jerk のスパイクとして拾える。
 
-| 泳法 | F1 | 完全一致 | +-1以内 |
-|---|---|---|---|
-| Butterfly | 0.455 | 55.2% | 75.9% |
-| Backstroke | 0.364 | 39.4% | 78.8% |
-| Breaststroke | 0.292 | 21.7% | 52.2% |
+この検出は絶対重力しきい値だけで動き、適応閾値も全セッション較正も要らない。
+O(1) メモリ・先読みなし・約20行の状態機械なので、そのまま MCU で因果実行でき、リアルタイム振動通知の土台になる。
 
-### 考察
+派生して取れるもの:
+- **ストローク率（SPM）** — 股間は体ロールのリズムが乗る。ジャイロのロール軸のスペクトルピークで約30 cyc/min。
+- **保守バイアスの集計** — 距離は過小なら可・過大は不可、ペースは遅めなら可・速めは不可（記録を盛らない方針）。
+  レングス数は `min(壁カウント, ペース推定)` で偽分割の過大を抑えつつ、検証済みの綺麗な 100m は保持する。
 
-- *ラップタイムの精度は良好*（MAE 0.67秒、ドリフト 0.61秒）。ターンを正しく拾えた
-  ケースではタイミングが正確であることを示す。
-- *ラップ数の一致率が課題*。主因は (a) 一部の長尺セッションでの過剰検出
-  （ストロークの活動変動が大きい泳者で閾値を反復的に跨ぐ）、
-  (b) 約35%のターン取りこぼし（活動の谷が浅い/短いターン）。
-- *装着位置の違いが根本的制約*。手首の加速度パターンは股間と大きく異なる。
-  Phase 1（自分のデータ）で飛躍的な精度向上が見込める。
-- 誤検出の32%は GT=0（ターンラベル無し）のセッションに集中。
-  うち1セッション（swimmer 20）だけで全FPの23%を占める。
-  この泳者は21分間泳いでいるがターンラベルが一切無く、ラベル品質の問題と推定される。
+`analysis/swim_report.py` に吸い出した CSV を渡すと、これらが一発で出る:
 
-## プロジェクト構成
+```
+📅 2026-06-21  プールスイム（自由形・25mプール）
+  距離         1150 m   （控えめ。実際はこれ以上）
+  ペース       約1:57 /100m   （遅め寄りの安全値）
+  泳ぎ時間     22:20（moving time）
+  ストローク率  約30 cyc/min（≒60 strokes/min）
+```
+
+---
+
+## ハードウェア
+
+- **MCU**: Seeed XIAO nRF52840 Sense（Cortex-M4F, 6軸 IMU = LSM6DS3TR-C, 2MB QSPI フラッシュ内蔵）
+- **電源**: LiPo + インラインのスライドスイッチ
+- **ファーム（`firmware/flash_logger`）**: VBUS にライブ追従。USB を抜く＝記録 / 挿す＝コンソール。
+  「短く泳ぐ → 更衣室で挿して吸い出す → また泳ぐ」が成立する。52Hz で約52分記録できる
+- **吸い出し（`tools/`）**: pyserial でフラッシュを CSV ダンプ。更衣室では Ubuntu タブレットで運用
+  （`flash_gui.py` の大ボタン: 吸い出して保存 / INFO / ERASE）
+
+ビルド/書込手順や落とし穴（IMU 電源レール、QSPI の明示デバイス指定、データ対応ケーブル必須 等）は `CLAUDE.md` に集約。
+
+---
+
+## いまどこまでできているか
+
+- ✅ 実機を股間装着で組み上げ、初のプール採取に成功（46分・1セッション）
+- ✅ gz 壁検出・距離/ペース/ラップ・ストローク率・保守集計の一発レポート（`analysis/swim_report.py`）
+- ✅ リアルタイム振動の因果シミュレーションで実現可能性を確認（`analysis/realtime_sim.py`）
+- ⏳ 振動モーター実装（モーター入手待ち）
+- ⏳ BLE オフロード / スマホアプリ / Strava 連携
+- ⏳ 防水筐体へのパッケージング
+
+技術的な所見・試した検出案と不採用の経緯は `analysis/` のドキュメント群に残している。
+
+---
+
+## リポジトリ構成
 
 ```
 mokkori-iq/
-├── config/default.json        # 検出器パラメータ（閾値・窓長・フィルタ係数）
-├── src/
-│   ├── dataio.py              # Brunner データセット読み込み
-│   ├── preprocessing.py       # Butterworth LP (causal biquad) + 移動標準偏差
-│   ├── detector.py            # ターン検出器（causal FSM、MCU移植可能）
-│   ├── lap_logger.py          # ターンタイムスタンプ → ラップログ変換
-│   └── evaluate.py            # 全被験者評価パイプライン
+├── CLAUDE.md                     # 開発ノート・運用手順・落とし穴の集約（実質の作業ログ）
+├── config/default.json           # 検出器パラメータ（閾値・窓長・フィルタ係数）
+├── src/                          # コアモジュール（dataio / preprocessing / detector / lap_logger / evaluate）
+├── firmware/
+│   ├── imu_bringup/              # 104Hz で6軸 CSV を USB 出力（ブリングアップ）
+│   └── flash_logger/             # 実データ採取用。VBUS追従で記録/コンソール切替、QSPIに追記
+├── tools/                        # ホスト側（serial_capture / flash_dump / flash_gui）
 ├── analysis/
-│   ├── findings.md            # データ探索の発見まとめ
-│   ├── explore_turns.py       # ターン信号の可視化・定量分析
-│   ├── tune*.py               # パラメータグリッドサーチ（tune1〜5）
-│   ├── diag_fp.py             # 誤検出の集中分析
-│   ├── fig_*.png              # 生成された図
-│   └── session_manifest.csv   # 全セッション一覧
-├── results/
-│   ├── per_session_*.csv      # セッション別評価結果
-│   └── per_subject_*.csv      # 被験者別評価結果
-├── data/brunner/              # Brunner データセット（git clone、.gitignore）
-├── requirements.txt           # numpy, scipy, pandas, matplotlib
-└── mokkori-iq-phase0-prompt.md
+│   ├── swim_report.py            # 取込CSV→距離/ペース/ラップ/SPM/Strava を一発出力（保守バイアス内蔵）
+│   ├── turn_stand.py             # gz オリエンテーション壁検出（detect_walls）
+│   ├── stroke_rate.py            # ストローク率（SPM）
+│   ├── realtime_sim.py           # リアルタイム振動の因果シミュレーション
+│   ├── feasibility_haptic_feedback.md # 振動フィードバックの実現可能性検討
+│   ├── findings_2026-06-21_*.md / approaches_log_2026-06-21.md # 初採取の所見・検出案の経緯
+│   └── findings.md / tune*.py / fig_*.png  # データ探索・チューニング
+├── data/
+│   ├── brunner/                  # 公開データセット（git clone, .gitignore）
+│   └── swim/                     # 実機で採取したセッション CSV + セッション記録(notes)
+├── results/                      # 評価結果 CSV
+└── requirements.txt
 ```
+
+---
 
 ## セットアップ・実行
 
 ```bash
 # 環境構築
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-# データ取得
-git clone --depth 1 https://github.com/brunnergino/swimming-recognition-lap-counting.git data/brunner
-
-# 評価実行
-.venv/bin/python src/evaluate.py --all-styles
-
-# 探索的分析の再現
-.venv/bin/python analysis/explore_turns.py
+# 採取済み CSV からレポートを出す
+.venv/bin/python analysis/swim_report.py data/swim/<session>.csv --date 2026-06-21
+.venv/bin/python analysis/turn_stand.py  data/swim/<session>.csv   # gz壁検出の可視化
+.venv/bin/python analysis/stroke_rate.py data/swim/<session>.csv   # ストローク率の可視化
 ```
+
+実機ファームのビルド/書込（arduino-cli + Seeed nRF52 コア）は `CLAUDE.md` を参照。
+
+---
 
 ## 参考文献
 
 - Brunner et al., "Swimming Style Recognition and Lane Counting Using a Smartwatch", ISWC 2019
+  - 開発初期に、この公開データ（手首装着・30Hz）で閾値ベースのターン検知を試作した（`src/`, `analysis/findings.md`）。
 - Delhaye et al., "Swimming Stroke and Turn Detection Using a Single Sacral-Mounted IMU", Sensors 2022
-  - 仙骨装着の単一IMUでの先行研究。前処理パイプライン（2次バターワースLP 10Hz）を参考にした
-
-## 今後（Phase 1 以降）
-
-1. *Phase 1*: 実際にプールで XIAO nRF52840 Sense を股間に装着してデータ収集。
-   自分のタッチターンの信号を `config/default.json` のパラメータで調整して精度を詰める。
-2. *Phase 2*: Arduino/C に `detector.py` の `update()` ロジックを移植。
-   リアルタイムでターン検知 + フラッシュにラップログ書き込み。
-3. *Phase 3*: BLE/USB-C でPC転送 → .fit ファイル生成 → Strava API アップロード。
-   ERM 振動モーターによる 100m ごとの触覚通知。
+  - 仙骨装着の単一IMUでの先行研究。前処理パイプライン（2次バターワースLP）を参考にした。
