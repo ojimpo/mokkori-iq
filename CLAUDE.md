@@ -97,6 +97,35 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
 - `preprocessing.make_config_for_fs(fs)`: biquad LP を fs 用に再設計（default.json は30Hz用。52Hz等で検出器をネイティブ実行）。30Hz指定で既存係数を完全再現する
 - `analysis/explore_swim.py <csv>`: 信号(|acc|/activity＋閾値/|gyro|)をプロットし、手首チューニング検出器の検出を重ねて `analysis/fig_swim_*.png` 出力
 
+### タブレット運用 & 引き継ぎ (Phase 1 データ採取)
+データ吸い出しは更衣室ロッカー内で **Ubuntu タブレット**運用。引き継ぎ情報は
+（Claude のメモリは端末ローカルで共有されないため）この CLAUDE.md とリポジトリに集約する。
+
+**現在の状態 (2026-06-21 時点)**
+- 実機: マイコン+LiPo+スイッチ半田付け完了。組立後の往復セルフテスト合格（5s/260samples/|acc|=1.013g）。
+  フラッシュは消去済み（0 samples、プール投入可）。充電は赤い充電LEDが消えれば満充電。
+- ファーム正常動作確認: USB有り=コンソール(赤)/USB無し=記録(緑点滅)。LED-A=RGBユーザーLED(ファーム), LED-B=緑の電源系インジケータ。
+- 実データはまだ未採取（data/swim/ は空、README のみ）。次は「プールで採取 → 吸い出し → 可視化」。
+
+**タブレット初回セットアップ（家で済ませる）**
+```bash
+git pull                                                    # GUI・Linux対応・本セクションを取得
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # venvは端末ごとに作り直す
+sudo apt install python3-tk                                 # flash_gui.py(Tkinter) に必須
+sudo usermod -aG dialout $USER                              # シリアル権限 → 実行後に再ログイン必須
+.venv/bin/python tools/flash_gui.py                         # デバイス直挿しで INFO が出れば疎通OK
+```
+
+**吸い出し → 共有フロー**
+- 採取: USB抜く=記録(緑点滅) → 泳ぐ → タブレットに直挿し(赤) → GUI「吸い出して保存」(=PULL: DUMP→CSV→ERASE)
+- 共有: `git add data/swim/ && git commit && git push` → Mac で `git pull` → `analysis/explore_swim.py` で可視化
+- 保存先 data/swim/ は .gitignore 対象外で追跡可（端末間共有方針）。ファイル名は日時付きで衝突しない。
+
+**鉄則**
+- 吸い出しは**データ対応ケーブル＋直挿し**必須。ドック/ハブ/充電専用ケーブルは VBUS は通すがデータ線が通らず、
+  シリアルポートが出ない（ioreg で AppleUSBSerial=0）。「充電できる≠データ通る」。本番ケーブルは家で INFO 確認済みの1本を専用化。
+- Linux のシリアルポートは /dev/ttyACM*（autodetect 対応済み）。出なければ `-p /dev/ttyACM0`。
+
 ### 次段
 プールで股間装着の実データ採取 → 上記で取込・可視化 → 検出器を実信号で再チューニング → C 移植。
 注意: Phase 0 検出器は「手首/30Hz」チューニング。股間装着は信号が別物なので、いきなり C 移植せず実データ採取が先。
