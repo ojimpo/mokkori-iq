@@ -106,12 +106,14 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
   フラッシュは消去済み（0 samples、プール投入可）。充電は赤い充電LEDが消えれば満充電。
 - ファーム正常動作確認: USB有り=コンソール(赤)/USB無し=記録(緑点滅)。LED-A=RGBユーザーLED(ファーム), LED-B=緑の電源系インジケータ。
 - 実データはまだ未採取（data/swim/ は空、README のみ）。次は「プールで採取 → 吸い出し → 可視化」。
+- 取込タブレット(Ubuntu/Python3.13)セットアップ済(2026-06-21): python3.13-venv/python3-tk導入、.venv作成＋依存導入(pyserial含む)、GUI起動(画面表示)確認。
+  **未了**: `sudo usermod -aG dialout $USER` → 再ログイン と、実機データケーブル直挿しでの疎通(INFO)。これが済めば採取運用に入れる。
 
 **タブレット初回セットアップ（家で済ませる）**
 ```bash
 git pull                                                    # GUI・Linux対応・本セクションを取得
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # venvは端末ごとに作り直す
-sudo apt install python3-tk                                 # flash_gui.py(Tkinter) に必須
+sudo apt install python3-venv python3-tk                    # venv作成(ensurepip)とTkinterに必須。素のpython3はvenv不可(Ubuntu/3.13は python3.13-venv)
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # venvは端末ごとに作り直す。pyserial含む
 sudo usermod -aG dialout $USER                              # シリアル権限 → 実行後に再ログイン必須
 .venv/bin/python tools/flash_gui.py                         # デバイス直挿しで INFO が出れば疎通OK
 ```
