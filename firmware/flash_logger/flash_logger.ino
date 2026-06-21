@@ -57,6 +57,56 @@ static bool vbus_present() {
   return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
 }
 
+// --- battery gauge (XIAO nRF52840) -----------------------------------------
+// VBAT goes through a 1M / 0.51M divider to PIN_VBAT (P0.31). VBAT_ENABLE
+// (P0.14) LOW connects the divider; we enable it only while measuring so the
+// divider doesn't leak current the rest of the time. Read against the chip's
+// 3.0 V internal reference at 12-bit, then undo the divider.
+//   Vbat = raw * (3000mV / 4096) * (1M+0.51M)/0.51M
+// NOTE: the divider ratio comes from the Seeed variant/wiki; if the reported
+// mV is off, sanity-check against a multimeter and adjust VBAT_DIVIDER.
+static const float    VBAT_DIVIDER = (1000.0f + 510.0f) / 510.0f;  // ~2.961
+static const float    ADC_REF_MV   = 3000.0f;   // AR_INTERNAL_3_0
+static const float    ADC_FULL     = 4096.0f;   // 12-bit
+static const uint16_t VBAT_FULL_MV = 4150;      // charger tapers near 4.2V
+
+static uint16_t read_vbat_mv() {
+  pinMode(VBAT_ENABLE, OUTPUT);
+  digitalWrite(VBAT_ENABLE, LOW);               // connect the divider
+  pinMode(PIN_VBAT, INPUT);
+  analogReference(AR_INTERNAL_3_0);
+  analogReadResolution(12);
+  delay(3);                                      // let the divider settle
+  (void)analogRead(PIN_VBAT);                    // discard first conversion
+  uint32_t acc = 0;
+  for (int i = 0; i < 16; i++) acc += analogRead(PIN_VBAT);
+  digitalWrite(VBAT_ENABLE, HIGH);              // disconnect (stop the leak)
+  float raw = acc / 16.0f;
+  return (uint16_t)(raw * ADC_REF_MV / ADC_FULL * VBAT_DIVIDER + 0.5f);
+}
+
+// Rough Li-ion state-of-charge from resting voltage (piecewise linear). While
+// on the charger the pack reads high, so this is a coarse estimate -- the main
+// use is "is it charged enough" and the charging flag below.
+static uint8_t vbat_pct(uint16_t mv) {
+  static const uint16_t v[] = {3300, 3500, 3600, 3700, 3800, 3900, 4000, 4200};
+  static const uint8_t  p[] = {   0,    8,   20,   45,   62,   75,   85,  100};
+  if (mv <= v[0]) return 0;
+  for (int i = 1; i < 8; i++) {
+    if (mv < v[i]) {
+      return p[i - 1] + (uint8_t)((uint32_t)(mv - v[i - 1]) *
+             (p[i] - p[i - 1]) / (v[i] - v[i - 1]));
+    }
+  }
+  return 100;
+}
+
+// No dedicated charge-status GPIO is broken out on the XIAO, so derive it:
+// on the charger (VBUS) and not yet topped off => charging; topped off => done.
+static bool battery_charging(uint16_t mv) {
+  return vbus_present() && mv < VBAT_FULL_MV;
+}
+
 // --- RGB status LED (common-anode on XIAO: drive LOW to light) --------------
 static void led(bool r, bool g, bool b) {
   digitalWrite(LED_RED,   r ? LOW : HIGH);
@@ -102,6 +152,10 @@ static void print_info() {
   Serial.print(" pages="); Serial.print(pages);
   Serial.print(" samples="); Serial.print(samples);
   Serial.print(" seconds="); Serial.println(secs, 1);
+  uint16_t mv = read_vbat_mv();
+  Serial.print("# vbat_mv="); Serial.print(mv);
+  Serial.print(" pct="); Serial.print(vbat_pct(mv));
+  Serial.print(" charging="); Serial.println(battery_charging(mv) ? 1 : 0);
   Serial.println("OK");
 }
 

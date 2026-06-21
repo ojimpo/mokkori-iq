@@ -92,6 +92,16 @@ def parse_info(lines):
     return info
 
 
+def format_battery(info):
+    """One-line human-friendly battery summary, or None if INFO had no battery."""
+    if "vbat_mv" not in info:
+        return None
+    mv = info["vbat_mv"]
+    pct = info.get("pct", "?")
+    state = "charging" if info.get("charging") else "on USB (full)"
+    return f"battery: {mv} mV  ~{pct}%  ({state})"
+
+
 def cmd_info(ser, echo=True):
     ser.reset_input_buffer()
     ser.write(b"INFO\n")
@@ -99,7 +109,12 @@ def cmd_info(ser, echo=True):
     if echo:
         for ln in lines:
             print(ln)
-    return parse_info(lines)
+    info = parse_info(lines)
+    if echo:
+        batt = format_battery(info)
+        if batt:
+            print(batt)
+    return info
 
 
 def cmd_erase(ser):

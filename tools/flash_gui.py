@@ -171,12 +171,23 @@ class FlashGui:
             raise RuntimeError("デバイスが見つかりません（USB接続を確認）")
         return port, open_serial(port)
 
+    @staticmethod
+    def _battery_line(info):
+        """Append a battery line (🔋 mV / %) when INFO reports it, else ''."""
+        if "vbat_mv" not in info:
+            return ""
+        mv = info["vbat_mv"]
+        pct = info.get("pct", "?")
+        state = "充電中" if info.get("charging") else "満充電"
+        return f"\n🔋 {mv} mV  {pct}%  ({state})"
+
     def _format_info(self, info):
         samples = int(info.get("samples", 0) or 0)
         secs = float(info.get("seconds", 0) or 0)
+        batt = self._battery_line(info)
         if samples > 0:
-            return f"● 記録あり\n{samples} samples / {secs:.1f} s", "#8bc34a"
-        return "○ 空（記録なし）", MUTED
+            return f"● 記録あり\n{samples} samples / {secs:.1f} s{batt}", "#8bc34a"
+        return f"○ 空（記録なし）{batt}", MUTED
 
     # ---- actions ----------------------------------------------------------
     def act_info(self):

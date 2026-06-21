@@ -93,8 +93,12 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
 - 6軸 int16 を 256B ページ（magic 0xA55A/count/seq + 20 sample）で QSPI に書込。52Hz で約52分／消去まで
 - LED: 消去=青 / 記録=緑点滅 / コンソール=赤 / 満杯=赤点滅
 - コンソールコマンド: `INFO` / `DUMP` / `ERASE` / `TESTLOG <sec>`（USB中でも追記、ベンチ用）/ `HELP`
+- `INFO` はバッテリも出す: `# vbat_mv=4015 pct=82 charging=1`。VBAT(P0.31)を VBAT_ENABLE(P0.14)=LOW で接続し、
+  3.0V内部参照/12bit/16回平均で読む。分圧比は variant の 1M/0.51M（`VBAT_DIVIDER`≈2.96）。専用の充電ステータスGPIOは無いので
+  `charging` は VBUS有り＆mv<4150 で導出（=満充電なら0）。主用途は「充電完了したか＋挿した直後の概算残量」。
+  分圧比がズレてたら実機をテスタで測って `VBAT_DIVIDER` を補正する（ビルドは通過済み、書込・実測検証は未）。
 - `tools/flash_dump.py`: `--pull [PATH]`（DUMP→CSV保存→ERASE を1コマンド＝1泳ぎ分。PATH省略で data/swim/ に自動命名）/
-  `--info` / `--erase` / `--testlog N` / `--selftest N`（ベンチ往復）。生int16を g/dps に変換
+  `--info` / `--erase` / `--testlog N` / `--selftest N`（ベンチ往復）。生int16を g/dps に変換。`--info`/GUIはバッテリ行も表示
 - 検証済(2026-06-03): TESTLOG 2s×2で 105→210（追記）、`--pull` で保存＆消去、|acc|=1.03g、往復整合
 
 ### 実データ取込 (device CSV → Phase 0)
