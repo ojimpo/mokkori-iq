@@ -50,6 +50,11 @@ PATH=".venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeed
 .venv/bin/python tools/flash_dump.py --pull data/swim/session01.csv   # 1泳ぎ吸い出し→保存→消去
 .venv/bin/python analysis/explore_swim.py data/swim/session01.csv     # 信号＋検出器を可視化
 
+# 一発レポート (取込済みCSV → 距離/ペース/レップ内訳/SPM/Strava用サマリ。保守バイアス内蔵)
+.venv/bin/python analysis/swim_report.py data/swim/session01.csv --date 2026-06-21
+.venv/bin/python analysis/turn_stand.py  data/swim/session01.csv   # gz壁検出の可視化(図)
+.venv/bin/python analysis/stroke_rate.py data/swim/session01.csv   # ストローク率の可視化(図)
+
 # 取込GUI (更衣室ロッカー内でUbuntuタブレット運用想定。大ボタン: PULL/INFO/ERASE)
 .venv/bin/python tools/flash_gui.py        # Ubuntuは事前に sudo apt install python3-tk
 ```
@@ -96,6 +101,11 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
 - `dataio.load_swim_csv(path)`: flash_dump CSV を session dict 化。**g→m/s²・dps→rad/s に変換**（Brunner/検出器閾値の単位に合わせる）、fs は t から自動推定
 - `preprocessing.make_config_for_fs(fs)`: biquad LP を fs 用に再設計（default.json は30Hz用。52Hz等で検出器をネイティブ実行）。30Hz指定で既存係数を完全再現する
 - `analysis/explore_swim.py <csv>`: 信号(|acc|/activity＋閾値/|gyro|)をプロットし、手首チューニング検出器の検出を重ねて `analysis/fig_swim_*.png` 出力
+- **`analysis/swim_report.py <csv> [--date ...] [--verbose]`**: **取込CSV→一発で距離/ペース/レップ内訳/SPM/Strava用サマリ**を出力（デバイスの完成形出力）。
+  検出は `turn_stand.detect_walls`（gz壁検出）を共有、ケイデンスは `stroke_rate.dominant_cadence` を再利用。
+  保守ルール: 各レップ `本数 = min(壁カウント, round(泳ぎ時間/標準レングス時間))`。標準レングス時間は「ターン間の泳ぎ実時間(立位除外)」の中央値で、
+  分子(泳ぎ時間)と単位を揃える。これで偽分割の過大を潰しつつ検証済みの綺麗な100mは保持。距離は下振れ・ペースは遅め＝[メトリクス算出方針]に合致。
+- `analysis/turn_stand.py` / `stroke_rate.py`: それぞれ gz壁検出・ストローク率の可視化図を出力（detect_walls / dominant_cadence の出どころ）。
 
 ### タブレット運用 & 引き継ぎ (Phase 1 データ採取)
 データ吸い出しは更衣室ロッカー内で **Ubuntu タブレット**運用。引き継ぎ情報は

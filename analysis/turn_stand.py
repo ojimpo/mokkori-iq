@@ -68,6 +68,61 @@ def episodes(mask, t, sig, min_dur):
     return out
 
 
+def detect_walls(sess, thr=2.0, vthr=5.0, refractory=12.0, tau=1.0):
+    """Detect walls/turns/rests from body-axis gravity (gz). Shared by the
+    report tool. Returns a dict of episode lists (each item is (start, end)),
+    plus block start/end times. turns keep their full (start, end) span.
+    """
+    t, acc, fs = sess["t"], sess["acc"], sess["fs"]
+    gz = ema(acc[:, 2], fs, tau)                  # gravity on body-long axis
+    eps = episodes(gz > thr, t, gz, 0.8)
+
+    # classify; a real plant/stand must reach clearly vertical (peak gz > vthr),
+    # else it's in-water bobbing/half-roll, not a wall.
+    taps, turns_e, rests, bigs = [], [], [], []
+    for a, b, pk in eps:
+        d = b - a
+        if d >= 90.0:
+            bigs.append((a, b))
+        elif d >= 7.0 and pk > vthr:
+            rests.append((a, b))
+        elif d < 1.2:
+            taps.append((a, b))
+        elif pk > vthr:
+            turns_e.append((a, b))
+        # else: dropped (short + not clearly vertical = bob/noise)
+
+    # refractory: drop a turn within `refractory` s of the previous kept wall
+    order = sorted([(a, b, 'turn') for a, b in turns_e] +
+                   [(a, b, 'rest') for a, b in rests] +
+                   [(a, b, 'big') for a, b in bigs])
+    kept, last = [], -1e9
+    for a, b, kind in order:
+        if kind != 'turn' or (a - last) >= refractory:
+            kept.append((a, b, kind))
+            last = a
+    turns = [(a, b) for a, b, k in kept if k == 'turn']
+
+    # tap triples: >=3 tap-blips within a 4 s span (the 3-tap markers)
+    triples, i = [], 0
+    while i < len(taps):
+        j = i
+        while j + 1 < len(taps) and taps[j + 1][0] - taps[i][0] < 4.0:
+            j += 1
+        if j - i + 1 >= 3:
+            triples.append((taps[i][0], taps[j][1]))
+            i = j + 1
+        else:
+            i += 1
+
+    return {
+        "gz": gz, "turns": turns, "rests": rests, "bigs": bigs,
+        "taps": taps, "triples": triples,
+        "starts": [t[0]] + [b for _, b in bigs],
+        "ends": [a for a, _ in bigs] + [t[-1]],
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("csv")
@@ -84,55 +139,12 @@ def main():
 
     sess = dataio.load_swim_csv(args.csv)
     t, acc, fs = sess["t"], sess["acc"], sess["fs"]
-    gz = ema(acc[:, 2], fs, args.tau)             # gravity on body-long axis
 
-    stand = gz > args.thr
-    eps = episodes(stand, t, gz, 0.8)
-
-    # classify; a real plant/stand must reach clearly vertical (peak gz > vthr),
-    # else it's in-water bobbing/half-roll, not a wall.
-    taps, turns, rests, bigs = [], [], [], []
-    for a, b, pk in eps:
-        d = b - a
-        if d >= 90.0:
-            bigs.append((a, b))
-        elif d >= 7.0 and pk > args.vthr:
-            rests.append((a, b))
-        elif d < 1.2:
-            taps.append((a, b))
-        elif pk > args.vthr:
-            turns.append((a, b))
-        # else: dropped (short + not clearly vertical = bob/noise)
-
-    # refractory: drop turns within `refractory` s of the previous kept wall
-    walls_pre = sorted([(a, 'turn') for a, _ in turns] +
-                       [(a, 'rest') for a, _ in rests] +
-                       [(a, 'big') for a, _ in bigs])
-    kept = []
-    last = -1e9
-    for a, kind in walls_pre:
-        if kind != 'turn' or (a - last) >= args.refractory:
-            kept.append((a, kind))
-            last = a
-    turns = [(a, a) for a, k in kept if k == 'turn']
-
-    # tap triples: >=3 tap-blips within a 4 s span
-    triples = []
-    i = 0
-    while i < len(taps):
-        j = i
-        while j + 1 < len(taps) and taps[j + 1][0] - taps[i][0] < 4.0:
-            j += 1
-        if j - i + 1 >= 3:
-            triples.append((taps[i][0], taps[j][1]))
-            i = j + 1
-        else:
-            i += 1
-
-    # swim blocks = spans between big rests (and session ends)
-    splits = [t[0]] + [b for _, b in bigs] + [t[-1]]
-    starts = [t[0]] + [b for _, b in bigs]
-    ends = [a for a, _ in bigs] + [t[-1]]
+    d = detect_walls(sess, args.thr, args.vthr, args.refractory, args.tau)
+    gz = d["gz"]
+    turns, rests, bigs = d["turns"], d["rests"], d["bigs"]
+    taps, triples = d["taps"], d["triples"]
+    starts, ends = d["starts"], d["ends"]
     walls = sorted([a for a, _ in turns] + [a for a, _ in rests])
 
     print(f"file: {args.csv}")
