@@ -32,7 +32,8 @@ GYRO_SENS_DPS = {125: 4.375e-3, 250: 8.75e-3, 500: 17.5e-3,
 
 
 def autodetect_port():
-    for pat in ("/dev/cu.usbmodem*", "/dev/tty.usbmodem*"):
+    # macOS exposes the CDC port as /dev/cu.usbmodem*, Linux as /dev/ttyACM*.
+    for pat in ("/dev/cu.usbmodem*", "/dev/tty.usbmodem*", "/dev/ttyACM*"):
         ports = sorted(glob.glob(pat))
         if ports:
             return ports[0]

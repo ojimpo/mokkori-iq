@@ -28,7 +28,8 @@ COLS = ["millis", "ax", "ay", "az", "gx", "gy", "gz"]
 
 
 def autodetect_port():
-    for pat in ("/dev/cu.usbmodem*", "/dev/tty.usbmodem*"):
+    # macOS exposes the CDC port as /dev/cu.usbmodem*, Linux as /dev/ttyACM*.
+    for pat in ("/dev/cu.usbmodem*", "/dev/tty.usbmodem*", "/dev/ttyACM*"):
         ports = sorted(glob.glob(pat))
         if ports:
             return ports[0]
