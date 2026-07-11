@@ -25,6 +25,7 @@
  *   DUMP            stream the recorded samples as raw bytes (see protocol)
  *   ERASE           erase the whole flash (the only way data is cleared)
  *   TESTLOG <sec>   append <sec> seconds now (even on USB) -- bench round-trip
+ *   VIB [ms] [pct]  run the vibration motor (default 500 ms at 100%)
  *   HELP            list commands
  */
 #include "LSM6DS3.h"
@@ -105,6 +106,24 @@ static uint8_t vbat_pct(uint16_t mv) {
 // on the charger (VBUS) and not yet topped off => charging; topped off => done.
 static bool battery_charging(uint16_t mv) {
   return vbus_present() && mv < VBAT_FULL_MV;
+}
+
+// --- vibration motor (coin ERM, low-side BSS138 switch on D10) --------------
+// 3V3 -- motor(+) ... motor(-) -- BSS138 drain; source -- GND;
+// D10 --[100R..1k]-- gate, gate --[100k]-- GND (off while the pin floats);
+// 1N4148 flyback across the motor, cathode on the 3V3 side.
+// Motor: JYUDAUFU 10x2.7 mm ERM, 3 V rated / 80 mA max (works 3-4.2 V).
+static const uint8_t PIN_MOTOR = 10;             // D10, same header as 3V3/GND
+
+// While logging (= in the pool), buzz a short double pulse every N seconds so
+// we can tell whether the vibration is felt through the case + swimsuit while
+// actually swimming. The bursts land at known offsets from the session start,
+// so they are easy to identify (and ignore) in the IMU data. 0 disables.
+static const uint32_t BUZZ_PERIOD_S = 60;
+static const uint32_t BUZZ_ON_MS = 200, BUZZ_GAP_MS = 200;
+
+static void motor_set(uint8_t duty_pct) {        // 0 = off
+  analogWrite(PIN_MOTOR, (uint16_t)duty_pct * 255 / 100);
 }
 
 // --- RGB status LED (common-anode on XIAO: drive LOW to light) --------------
@@ -205,11 +224,21 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
   uint32_t t0 = millis();
   uint32_t next_us = micros();
   bool full = false;
+  bool buzzing = false;
 
   for (;;) {
     if (addr + PAGE_SIZE > size) { full = true; break; }
     if (max_ms && (millis() - t0) >= max_ms) break;
     if (stop_on_vbus && vbus_present()) break;
+
+    // Periodic feel-test double pulse, non-blocking so sample pacing holds.
+    if (BUZZ_PERIOD_S) {
+      uint32_t ph = (millis() - t0) % (BUZZ_PERIOD_S * 1000UL);
+      bool on = (ph < BUZZ_ON_MS) ||
+                (ph >= BUZZ_ON_MS + BUZZ_GAP_MS &&
+                 ph < 2 * BUZZ_ON_MS + BUZZ_GAP_MS);
+      if (on != buzzing) { buzzing = on; motor_set(on ? 100 : 0); }
+    }
 
     uint32_t now = micros();
     if ((int32_t)(now - next_us) < 0) continue;
@@ -237,6 +266,7 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
     }
   }
 
+  motor_set(0);                                  // never leave the motor on
   if (n > 0) {                                   // flush partial final page
     memcpy(buf + 2, &n, 2);
     flash.writeBuffer(addr, buf, PAGE_SIZE);
@@ -245,7 +275,8 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
 }
 
 static void print_help() {
-  Serial.println("# commands: INFO | DUMP | ERASE | TESTLOG <sec> | HELP");
+  Serial.println("# commands: INFO | DUMP | ERASE | TESTLOG <sec> | "
+                 "VIB [ms] [pct] | HELP");
 }
 
 static void do_erase() {
@@ -263,6 +294,17 @@ static void handle_command(char *line) {
   } else if (strncmp(line, "ERASE", 5) == 0) {
     do_erase();
     Serial.println("ERASED");
+  } else if (strncmp(line, "VIB", 3) == 0) {
+    int ms = 0, pct = 0;
+    sscanf(line + 3, "%d %d", &ms, &pct);
+    if (ms <= 0 || ms > 10000) ms = 500;
+    if (pct <= 0 || pct > 100) pct = 100;
+    Serial.print("# vib "); Serial.print(ms);
+    Serial.print("ms "); Serial.print(pct); Serial.println("%");
+    motor_set((uint8_t)pct);
+    delay((uint32_t)ms);
+    motor_set(0);
+    Serial.println("OK");
   } else if (strncmp(line, "TESTLOG", 7) == 0) {
     int sec = atoi(line + 7);
     if (sec <= 0) sec = 5;
@@ -296,6 +338,8 @@ void setup() {
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_BLUE, OUTPUT);
   led(0, 0, 0);
+  pinMode(PIN_MOTOR, OUTPUT);
+  digitalWrite(PIN_MOTOR, LOW);                  // motor off until asked
 
   Serial.begin(115200);
 
