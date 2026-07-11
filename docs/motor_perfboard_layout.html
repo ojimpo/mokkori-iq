@@ -1,0 +1,257 @@
+<title>mokkori-iq 振動モーター基板レイアウト</title>
+<style>
+  :root {
+    --bg: #f4f2ec;
+    --panel: #fffdf8;
+    --ink: #22252b;
+    --muted: #6b7280;
+    --line: #ddd8cc;
+    --board: #171b22;
+    --board-line: #2b333f;
+    --accent: #c05a2e;
+    /* net colors (semantic, constant across themes) */
+    --v3: #e5484d;
+    --gnd: #9aa3b2;
+    --drn: #4a90d9;
+    --gate: #e0a63c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c2027;
+      --ink: #e7e9ee;
+      --muted: #9aa1ac;
+      --line: #2c313b;
+      --board: #0f1319;
+      --board-line: #262e39;
+      --accent: #e0824f;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f2ec; --panel: #fffdf8; --ink: #22252b; --muted: #6b7280;
+    --line: #ddd8cc; --board: #171b22; --board-line: #2b333f; --accent: #c05a2e;
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a; --panel: #1c2027; --ink: #e7e9ee; --muted: #9aa1ac;
+    --line: #2c313b; --board: #0f1319; --board-line: #262e39; --accent: #e0824f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.55; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+  header { margin-bottom: 24px; }
+  .kicker {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 6px;
+  }
+  h1 { font-size: 24px; margin: 0 0 6px; text-wrap: balance; letter-spacing: -.01em; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px; margin-top: 20px;
+  }
+  h2 { font-size: 15px; margin: 0 0 14px; letter-spacing: -.005em; }
+  .board-scroll { overflow-x: auto; border-radius: 10px; }
+  svg { display: block; width: 100%; height: auto; min-width: 560px; background: var(--board); border-radius: 10px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 14px; font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+  .dot { width: 13px; height: 13px; border-radius: 50%; flex: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  td.coord { font-family: ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tag { font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 1px 6px; border-radius: 5px; font-weight: 600; white-space: nowrap; }
+  .note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+  .note strong { color: var(--ink); }
+  .pinref { display: grid; grid-template-columns: repeat(auto-fit, minmax(74px,1fr)); gap: 6px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  .pinref div { border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; }
+  .pinref .hl { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+  .pinref small { display: block; color: var(--muted); font-size: 10.5px; letter-spacing: .04em; }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="kicker">mokkori-iq · flash_logger</p>
+    <h1>振動モーター駆動回路 — ユニバーサル基板レイアウト</h1>
+    <p class="sub">XIAO nRF52840 Sense / BSS138 ローサイドスイッチ / コイン型 ERM。座標 = 列1–12 × 行A–G。</p>
+  </header>
+
+  <div class="card">
+    <h2>基板配置図（部品面から見た図・XIAO は USB-C を左向きに挿す）</h2>
+    <div class="board-scroll">
+      <svg id="board" viewBox="0 0 720 470" role="img" aria-label="perfboard layout"></svg>
+    </div>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--v3)"></i>3V3 ネット</span>
+      <span><i class="dot" style="background:var(--gnd)"></i>GND ネット</span>
+      <span><i class="dot" style="background:var(--drn)"></i>ドレイン / モーター</span>
+      <span><i class="dot" style="background:var(--gate)"></i>ゲート（信号）</span>
+    </div>
+    <p class="note"><strong>向き:</strong> USB-C を左・部品面を上にして挿すと、手前のソケット行（行F）が左から VUSB / GND / 3V3 / D10 / D9 / D8 / D7 になる。使うのは <strong>F2=GND・F3=3V3・F4=D10</strong> の3つ。</p>
+  </div>
+
+  <div class="card">
+    <h2>配線リスト（この10本だけ）</h2>
+    <div style="overflow-x:auto">
+    <table>
+      <thead><tr><th>#</th><th>部品 / 種別</th><th>始点</th><th>終点</th><th>メモ</th></tr></thead>
+      <tbody id="conns"></tbody>
+    </table>
+    </div>
+    <p class="note"><strong>ゲートで3本合流:</strong> F8（ゲート）に「R1（D10から）」「R2（GNDへ）」「BSS138ゲート足」が集まる。ここが配置の中心。R1 は行F上を D10→ゲートへ飛ばす（間の D9/D8/D7 は足を浮かせて跨ぐ、または裏配線）。</p>
+  </div>
+
+  <div class="card">
+    <h2>XIAO ピン参照（行F・手前ソケット）</h2>
+    <div class="pinref">
+      <div>F1<small>VUSB</small></div>
+      <div class="hl">F2<small>GND</small></div>
+      <div class="hl">F3<small>3V3</small></div>
+      <div class="hl">F4<small>D10</small></div>
+      <div>F5<small>D9</small></div>
+      <div>F6<small>D8</small></div>
+      <div>F7<small>D7</small></div>
+    </div>
+    <p class="note">※列数・行数は実物のソケット位置に合わせて微調整すること。右側に空き列が4〜5列あれば足りる。BSS138 は変換基板ごと <strong>2×4 穴（列8–9 × 行C–F）</strong>に挿す。ドレイン端（単脚側=2穴分岐）を上（行C）に、ゲート/ソース端を下（行F）に向ける。どの穴が G/S/D かはテスターで確定した通り。</p>
+  </div>
+</div>
+
+<script>
+const P = 50, ML = 70, MT = 56, R = 9;
+const rows = "ABCDEFG";
+const cx = c => ML + (c-1)*P;
+const cy = r => MT + (typeof r==="string" ? rows.indexOf(r) : r)*P;
+const key = k => ({ r: k[0], c: +k.slice(1) });
+const hx = k => cx(key(k).c), hy = k => cy(key(k).r);
+
+const NET = { v3:'#e5484d', gnd:'#9aa3b2', drn:'#4a90d9', gate:'#e0a63c' };
+
+// hole -> net color
+const netHoles = {
+  v3:  ['F3','B8'],
+  gnd: ['F2','G2','G3','G4','G5','G6','G7','G8','G9','F9'],
+  drn: ['C8','C9'],
+  gate:['F8'],
+};
+// socket holes (XIAO)
+const sockA = [1,2,3,4,5,6,7].map(c=>'A'+c);
+const sockF = [1,2,3,4,5,6,7].map(c=>'F'+c);
+const labA = ['D0','D1','D2','D3','D4','D5','D6'];
+const labF = ['VUSB','GND','3V3','D10','D9','D8','D7'];
+
+let s = '';
+const NS = '';
+function el(t){ return `<${t}`; }
+
+// --- board substrate grid: all holes as faint rings ---
+for(let ri=0; ri<7; ri++){
+  for(let c=1;c<=12;c++){
+    s += `<circle cx="${cx(c)}" cy="${cy(ri)}" r="${R}" fill="none" stroke="var(--board-line)" stroke-width="2"/>`;
+  }
+}
+
+// --- XIAO body footprint (cols1-7, rows A..F) ---
+s += `<rect x="${cx(1)-24}" y="${cy('A')-24}" width="${6*P+48}" height="${5*P+48}" rx="12" fill="rgba(120,140,170,.10)" stroke="rgba(140,160,190,.35)" stroke-width="1.5"/>`;
+s += `<text x="${cx(4)}" y="${cy('C')+5}" text-anchor="middle" fill="rgba(180,195,215,.55)" font-size="17" font-family="ui-monospace,Menlo,monospace" letter-spacing="1">XIAO nRF52840</text>`;
+s += `<text x="${cx(1)-46}" y="${cy('C')-4}" text-anchor="middle" fill="rgba(180,195,215,.5)" font-size="12" font-family="ui-monospace,Menlo,monospace" transform="rotate(-90 ${cx(1)-46} ${cy('C')})">USB-C</text>`;
+
+// --- wires (draw under pads) ---
+function wire(a,b,color,w){ s += `<line x1="${hx(a)}" y1="${hy(a)}" x2="${hx(b)}" y2="${hy(b)}" stroke="${color}" stroke-width="${w||4}" stroke-linecap="round"/>`; }
+// GND rail row G
+wire('G2','G9',NET.gnd,6);
+wire('F2','G2',NET.gnd,4);   // XIAO GND down to rail
+wire('F9','G9',NET.gnd,4);   // source down to rail
+wire('F3','B8',NET.v3,4);    // 3V3 up into zone
+
+// --- component glyphs ---
+// BSS138 adapter (2x4 footprint) over cols8-9, rows C..F
+s += `<rect x="${cx(8)-20}" y="${cy('C')-20}" width="${P+40}" height="${3*P+40}" rx="9" fill="rgba(60,150,90,.16)" stroke="#3fae64" stroke-width="1.5"/>`;
+s += `<text x="${cx(8)+P/2}" y="${cy('C')-28}" text-anchor="middle" fill="#4fbf74" font-size="13" font-weight="700" font-family="ui-monospace,Menlo,monospace">BSS138 (2×4)</text>`;
+s += `<text x="${cx(8)+P/2}" y="${cy('D')+5}" text-anchor="middle" fill="rgba(120,200,150,.6)" font-size="10" font-family="ui-monospace,Menlo,monospace">基板下</text>`;
+s += `<text x="${cx(8)+P/2}" y="${cy('E')+5}" text-anchor="middle" fill="rgba(120,200,150,.6)" font-size="10" font-family="ui-monospace,Menlo,monospace">(未使用)</text>`;
+
+// resistor glyph helper (small rect at midpoint + leads)
+function res(a,b,label,color){
+  const mx=(hx(a)+hx(b))/2, my=(hy(a)+hy(b))/2;
+  s += `<line x1="${hx(a)}" y1="${hy(a)}" x2="${hx(b)}" y2="${hy(b)}" stroke="${color}" stroke-width="3" stroke-dasharray="2 4"/>`;
+  s += `<rect x="${mx-17}" y="${my-9}" width="34" height="18" rx="4" fill="var(--board)" stroke="${color}" stroke-width="2"/>`;
+  s += `<text x="${mx}" y="${my+4}" text-anchor="middle" fill="${color}" font-size="11" font-weight="700" font-family="ui-monospace,Menlo,monospace">${label}</text>`;
+}
+res('F4','F8','R1',NET.gate);       // gate series (along row F)
+res('F8','G8','R2',NET.gate);       // pulldown
+
+// diode glyph B8 -> C8 (band near B8 = 3V3)
+(function(){
+  const a='B8', b='C8';
+  s += `<line x1="${hx(a)}" y1="${hy(a)}" x2="${hx(b)}" y2="${hy(b)}" stroke="${NET.v3}" stroke-width="3"/>`;
+  const mx=hx(a), my=(hy(a)+hy(b))/2;
+  s += `<rect x="${mx-14}" y="${my-11}" width="28" height="22" rx="4" fill="var(--board)" stroke="${NET.v3}" stroke-width="2"/>`;
+  s += `<line x1="${mx-8}" y1="${my-7}" x2="${mx-8}" y2="${my+7}" stroke="${NET.v3}" stroke-width="3"/>`;
+  s += `<text x="${mx+16}" y="${my+4}" fill="${NET.v3}" font-size="10.5" font-weight="700" font-family="ui-monospace,Menlo,monospace">1N4148</text>`;
+})();
+
+// --- motor (bottom right) ---
+const motx = cx(11)+8, moty = cy('G')+6;
+s += `<circle cx="${motx}" cy="${moty}" r="20" fill="#20242c" stroke="#555c68" stroke-width="2"/>`;
+s += `<circle cx="${motx}" cy="${moty}" r="7" fill="#3a4049"/>`;
+s += `<text x="${motx}" y="${moty+38}" text-anchor="middle" fill="var(--gnd)" font-size="11" font-family="ui-monospace,Menlo,monospace">MOTOR</text>`;
+// leads: red -> B8 (3V3), blue -> C9 (drain)
+s += `<path d="M ${motx-14} ${moty-8} Q ${hx('B8')+40} ${moty-40} ${hx('B8')} ${hy('B8')}" fill="none" stroke="${NET.v3}" stroke-width="3.5"/>`;
+s += `<path d="M ${motx-8} ${moty+6} Q ${hx('C9')+30} ${moty} ${hx('C9')} ${hy('C9')}" fill="none" stroke="${NET.drn}" stroke-width="3.5"/>`;
+s += `<text x="${motx+26}" y="${moty-6}" fill="${NET.v3}" font-size="11" font-weight="700" font-family="ui-monospace,Menlo,monospace">＋</text>`;
+s += `<text x="${motx+26}" y="${moty+14}" fill="${NET.drn}" font-size="12" font-weight="700" font-family="ui-monospace,Menlo,monospace">－</text>`;
+
+// --- colored net pads on top ---
+for(const net in netHoles){
+  for(const h of netHoles[net]){
+    s += `<circle cx="${hx(h)}" cy="${hy(h)}" r="${R-1}" fill="${NET[net]}" stroke="var(--board)" stroke-width="2"/>`;
+  }
+}
+// socket pads
+for(const h of [...sockA, ...sockF]){
+  s += `<rect x="${hx(h)-R-1}" y="${hy(h)-R-1}" width="${2*R+2}" height="${2*R+2}" rx="3" fill="none" stroke="#7f8a99" stroke-width="2.5"/>`;
+}
+// BSS138 pad function labels
+const padLab = [['C8','D'],['C9','D'],['F8','G'],['F9','S']];
+for(const [h,t] of padLab){
+  s += `<text x="${hx(h)+13}" y="${hy(h)-11}" fill="#cdd4de" font-size="11" font-weight="700" font-family="ui-monospace,Menlo,monospace">${t}</text>`;
+}
+
+// --- labels: row + col headers ---
+for(let ri=0; ri<7; ri++){
+  s += `<text x="${cx(1)-34}" y="${cy(ri)+5}" text-anchor="middle" fill="var(--gnd)" font-size="14" font-family="ui-monospace,Menlo,monospace" font-weight="600">${rows[ri]}</text>`;
+}
+for(let c=1;c<=12;c++){
+  s += `<text x="${cx(c)}" y="${cy(0)-30}" text-anchor="middle" fill="var(--gnd)" font-size="13" font-family="ui-monospace,Menlo,monospace" font-variant-numeric="tabular-nums">${c}</text>`;
+}
+// XIAO pin labels
+labA.forEach((t,i)=> s += `<text x="${cx(i+1)}" y="${cy('A')-16}" text-anchor="middle" fill="#95a0b0" font-size="10.5" font-family="ui-monospace,Menlo,monospace">${t}</text>`);
+labF.forEach((t,i)=>{
+  const used = (i===1||i===2||i===3);
+  s += `<text x="${cx(i+1)}" y="${cy('F')+24}" text-anchor="middle" fill="${used?'var(--accent)':'#95a0b0'}" font-size="${used?11.5:10.5}" font-weight="${used?700:400}" font-family="ui-monospace,Menlo,monospace">${t}</text>`;
+});
+
+document.getElementById('board').innerHTML = s;
+
+// --- connection table ---
+const T = (bg)=>`background:${bg}22;color:${bg};border:1px solid ${bg}66`;
+const conns = [
+  ['1','ジャンパー', 'F2 <span class="tag" style="'+T(NET.gnd)+'">GND</span>', 'G2', 'GNDレール起点'],
+  ['2','ベア線（レール）', 'G2', 'G9', '行G に沿って GNDレール'],
+  ['3','ジャンパー', 'F3 <span class="tag" style="'+T(NET.v3)+'">3V3</span>', 'B8', '3V3 を部品エリアへ'],
+  ['4','抵抗 R1 100Ω–1kΩ', 'F4 <span class="tag" style="'+T(NET.gate)+'">D10</span>', 'F8 ゲート', 'ゲート直列・同じ行Fを飛ばす'],
+  ['5','抵抗 R2 100kΩ', 'F8 ゲート', 'G8 レール', 'プルダウン'],
+  ['6','ダイオード 1N4148', 'B8 3V3（帯側）', 'C8 ドレイン', 'フライバック・帯=3V3側'],
+  ['7','ジャンパー', 'F9 ソース', 'G9 レール', 'MOSFETソースをGNDへ'],
+  ['8','BSS138（変換基板 2×4）', 'C8/C9=ドレイン(上端), F8=ゲート', 'F9=ソース(下端)', 'ドレイン端を上に'],
+  ['9','モーター 赤(＋)', 'B8 <span class="tag" style="'+T(NET.v3)+'">3V3</span>', '—', 'リード線'],
+  ['10','モーター 青(−)', 'C9 <span class="tag" style="'+T(NET.drn)+'">ドレイン</span>', '—', 'リード線'],
+];
+document.getElementById('conns').innerHTML = conns.map(r=>
+  `<tr><td class="coord">${r[0]}</td><td>${r[1]}</td><td class="coord">${r[2]}</td><td class="coord">${r[3]}</td><td>${r[4]}</td></tr>`
+).join('');
+</script>
