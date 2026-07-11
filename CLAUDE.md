@@ -17,6 +17,12 @@ Phase 1 は実機 XIAO nRF52840 Sense（股間装着）への移植と実デー�
 - results/ : 評価結果 CSV（セッション別・被験者別）
 - firmware/ : 実機ファーム (Arduino/Seeed nRF52)。imu_bringup = IMU ブリングアップ
 - tools/ : ホスト側ツール (pyserial)。serial_capture.py = ストリーム取得/検証、flash_dump.py = フラッシュ記録の吸い出し/変換、flash_gui.py = flash_dump を包む大ボタンGUI(Tkinter)
+- DEVLOG.md : 作業日誌 (Cosense「mokkori-iq 進捗ログ」のミラー)
+
+## 作業日誌の運用 (2026-07-11 開始、pulse-pump と同じ)
+作業のたびに **DEVLOG.md と Cosense「mokkori-iq 進捗ログ」の両方**へ時刻付きエントリで記録する
+（日付見出し → `HH:MM タイトル` → 詳細箇条書き。判断理由・ハマり・知見まで詳細に残す）。
+Claude Code はひと区切りごとに自発的に追記すること。過去の経緯（〜2026-07-10）は本ファイルと git log 参照。
 
 ## コマンド
 ```bash
@@ -37,15 +43,17 @@ git clone --depth 1 https://github.com/brunnergino/swimming-recognition-lap-coun
 
 # --- 実機ファーム (Phase 1) --- ※すべてリポジトリルートで実行
 # ビルド & 書き込み (venv の bin を PATH 先頭に: コアのビルド後処理が python を呼ぶため)
-PATH=".venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/imu_bringup
-PATH=".venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/imu_bringup
+# ※必ず $PWD 付きの絶対パスで。相対 PATH だと Go の exec 制約で
+#   "cannot run executable found relative to current directory" になる (2026-07-11 確認)
+PATH="$PWD/.venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/imu_bringup
+PATH="$PWD/.venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/imu_bringup
 
 # IMU ストリームの取得/検証 (サンプルレート・各軸レンジ・重力チェック)
 .venv/bin/python tools/serial_capture.py -s 6
 
 # フラッシュ記録版 (ビルド/書込は上の firmware/imu_bringup を firmware/flash_logger に置換)
-PATH=".venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
-PATH=".venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
+PATH="$PWD/.venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
+PATH="$PWD/.venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
 .venv/bin/python tools/flash_dump.py --selftest 5         # ベンチ往復テスト
 .venv/bin/python tools/flash_dump.py --pull data/swim/session01.csv   # 1泳ぎ吸い出し→保存→消去
 .venv/bin/python analysis/explore_swim.py data/swim/session01.csv     # 信号＋検出器を可視化
@@ -92,7 +100,13 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
 - 記録は**追記方式**。消去は明示 `ERASE` のみ（USBを抜いても自動消去しない＝うっかりデータ消失なし）
 - 6軸 int16 を 256B ページ（magic 0xA55A/count/seq + 20 sample）で QSPI に書込。52Hz で約52分／消去まで
 - LED: 消去=青 / 記録=緑点滅 / コンソール=赤 / 満杯=赤点滅
-- コンソールコマンド: `INFO` / `DUMP` / `ERASE` / `TESTLOG <sec>`（USB中でも追記、ベンチ用）/ `HELP`
+- コンソールコマンド: `INFO` / `DUMP` / `ERASE` / `TESTLOG <sec>`（USB中でも追記、ベンチ用）/ `VIB [ms] [pct]` / `HELP`
+- **振動モーター対応 (2026-07-11、実機未検証)**: コイン型 ERM（JYUDAUFU 10mm×2.7mm、定格3V/最大80mA、Amazon 20個入）を
+  D10 の低サイド BSS138 で駆動。回路: 3V3→モーター(+) / モーター(−)→BSS138ドレイン / ソース→GND /
+  D10→(100Ω〜1kΩ)→ゲート / ゲート→(100kΩ)→GND プルダウン / 1N4148 をモーター両端に並列（カソード=3V3側）。
+  D10 は右側ヘッダで 3V3/GND と同列＝ユニバーサル基板の配線が片側で済む。制御は `analogWrite` 統一（duty 可変）。
+  `VIB` はベンチ体感テスト用。**記録中は 60s ごとにダブルパルス**（200ms×2、`BUZZ_PERIOD_S` で変更・0で無効）＝
+  水中で筐体＋水着越しの体感を採取と同時に検証する仕掛け。既知タイミングなので IMU データから識別・除外可能
 - `INFO` はバッテリも出す: `# vbat_mv=4015 pct=82 charging=1`。VBAT(P0.31)を VBAT_ENABLE(P0.14)=LOW で接続し、
   3.0V内部参照/12bit/16回平均で読む。分圧比は variant の 1M/0.51M（`VBAT_DIVIDER`≈2.96）。専用の充電ステータスGPIOは無いので
   `charging` は VBUS有り＆mv<4150 で導出（=満充電なら0）。主用途は「充電完了したか＋挿した直後の概算残量」。
