@@ -20,7 +20,7 @@ public struct StravaSummary {
     ///   - startEpoch: サンプル 0 の絶対時刻（手動アンカー or BLE 時刻同期）
     ///   - report: 解析結果
     public init(report: SwimReport, startEpoch: Date, calendar: Calendar = .current) {
-        let swimStart = report.reps.first?.span.start ?? 0
+        let swimStart = report.intervals.first?.span.start ?? 0
         let start = startEpoch.addingTimeInterval(swimStart)
         self.startLocal = start
         self.movingSeconds = Int(report.movingTime.rounded())
@@ -51,10 +51,10 @@ public struct StravaSummary {
             "ペース \(fmt(r.pace100))/100m",
             "実経過 \(fmt(r.elapsed))（休憩込み。表示時間は泳ぎのみ）",
         ]
-        if let spl = r.strokesPerLengthMedian, let sw = r.swolfAverage {
-            lines.append("ストローク \(r.strokesTotal)（中央値 \(Int(spl))/本）・SWOLF平均 \(Int(sw.rounded()))")
+        if let spl = r.strokesPerLapMedian, let sw = r.swolfAverage {
+            lines.append("ストローク \(r.strokesTotal)（中央値 \(Int(spl))/ラップ）・SWOLF平均 \(Int(sw.rounded()))")
         }
-        if let best = r.bestLength {
+        if let best = r.bestLap {
             lines.append("ベスト \(fmt(best.duration / r.poolLength * 100))/100m")
         }
         lines.append("mokkori-iq（自作スイムトラッカー）")

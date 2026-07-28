@@ -1,6 +1,6 @@
 import Foundation
 
-/// 本ごとストローク数（ガーミン互換）。swim_report.py の
+/// ラップごとストローク数（ガーミン互換）。swim_report.py の
 /// bandpass_coeffs / biquad_filter / count_strokes / length_spans と同一算術。
 /// 股間デバイスは体ロール（左右1往復=1サイクル）がジャイロに乗り、これが
 /// ガーミンの「時計側の腕のストローク数」と 1:1 で同じ土俵になる。
@@ -78,9 +78,9 @@ public enum StrokeCounter {
         return count
     }
 
-    /// レップ内の本ごとスパン: 壁を蹴った時刻（立ち終わり）→次の壁到着
+    /// インターバル内のラップごとスパン: 壁を蹴った時刻（立ち終わり）→次の壁到着
     /// （立ち始まり）。立位時間は構造上含まれない。
-    public static func lengthSpans(s0: Double, s1: Double, turns: [Span]) -> [Span] {
+    public static func lapSpans(s0: Double, s1: Double, turns: [Span]) -> [Span] {
         var pts = [s0]
         for w in turns.filter({ s0 <= $0.start && $0.start <= s1 }).sorted() {
             pts.append(w.start)

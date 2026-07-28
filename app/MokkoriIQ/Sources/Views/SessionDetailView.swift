@@ -1,7 +1,13 @@
 import SwiftUI
 import MokkoriCore
 
-/// レポート画面: swim_report.py の出力に対応（距離/ペース/泳ぎ時間/半分割/レップ内訳）。
+/// レポート画面: swim_report.py の出力に対応（距離/ペース/タイム/セット/インターバル/ラップ）。
+///
+/// 用語は Garmin 日本語と水泳の練習用語に合わせている:
+/// ラップ = プールの片道(25m) / インターバル = レストで区切られた連続泳ぎ /
+/// セット = 大休憩で区切られた塊。
+///
+/// レイアウトは Apple フィットネスの「ワークアウトの詳細」に倣う（`MetricStyle.swift`）。
 struct SessionDetailView: View {
     @State var model: SessionAnalysisModel
 
@@ -24,16 +30,14 @@ struct SessionDetailView: View {
 
     private func reportList(_ report: SwimReport) -> some View {
         List {
-            Section {
-                summaryGrid(report)
-            }
+            Section { summaryCard(report) }
 
-            let crossChecks = report.reps.filter(\.crossCheck)
+            let crossChecks = report.intervals.filter(\.crossCheck)
             if !crossChecks.isEmpty {
                 Section("CROSS-CHECK 警告") {
-                    ForEach(Array(crossChecks.enumerated()), id: \.offset) { _, rep in
+                    ForEach(Array(crossChecks.enumerated()), id: \.offset) { _, iv in
                         Label {
-                            Text("半\(rep.half) レップ\(rep.rep): 壁カウント\(rep.wallCount)本 vs ペース推定\(rep.paceCount)本 → \(rep.lengths)本を採用。検出がずれている可能性")
+                            Text("セット\(iv.setNumber) インターバル\(iv.number): 壁カウント\(iv.wallCount)ラップ vs ペース推定\(iv.paceCount)ラップ → \(iv.laps)ラップを採用。検出がずれている可能性")
                                 .font(.caption)
                         } icon: {
                             Image(systemName: "exclamationmark.triangle.fill")
@@ -47,7 +51,7 @@ struct SessionDetailView: View {
                 NavigationLink {
                     WallIntervalView(model: model)
                 } label: {
-                    Label("壁インターバルを確認・修正", systemImage: "checklist")
+                    Label("ラップを確認・修正", systemImage: "checklist")
                 }
                 NavigationLink {
                     StravaUploadView(model: model)
@@ -58,7 +62,7 @@ struct SessionDetailView: View {
                           ? "square.and.arrow.up" : "checkmark.circle")
                 }
             } footer: {
-                Text(model.isEdited ? "壁の修正が適用されています" :
+                Text(model.isEdited ? "ターンの修正が適用されています" :
                         "Strava アップ前にここで検出結果を確認します")
             }
 
@@ -68,109 +72,163 @@ struct SessionDetailView: View {
                         .listRowInsets(EdgeInsets(top: 8, leading: 12,
                                                   bottom: 12, trailing: 12))
                 }
+                .headerProminence(.increased)
             }
 
-            Section("半分割") {
-                ForEach(report.halves, id: \.index) { h in
-                    HStack {
-                        Text("半\(h.index)")
-                        Spacer()
-                        Text(fmtMeters(h.distance))
-                            .monospacedDigit()
-                        Text(fmtTime(h.movingTime))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                        Text(fmtTime(h.pace100) + "/100m")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            Section {
-                ForEach(Array(report.reps.enumerated()), id: \.offset) { _, rep in
-                    HStack {
-                        Text("半\(rep.half) レップ\(rep.rep)")
-                        if rep.crossCheck {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                                .imageScale(.small)
-                        }
-                        Spacer()
-                        Text("泳ぎ \(fmtTime(rep.swimTime))")
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        Text("\(rep.lengths)本 (\(rep.lengths * Int(report.poolLength))m)")
-                            .monospacedDigit()
-                    }
-                    .font(.callout)
-                }
-            } header: {
-                Text("レップ内訳")
-            } footer: {
-                Text("1本の典型泳ぎ時間 \(fmtTime(report.typicalLengthTime)) / \(Int(report.poolLength))m")
-            }
-
-            if !report.lengths.isEmpty {
-                Section {
-                    ForEach(Array(report.lengths.enumerated()), id: \.offset) { _, l in
-                        HStack {
-                            Text("半\(l.half) R\(l.rep) L\(l.num)")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text(String(format: "%.1fs", l.duration))
-                                .monospacedDigit()
-                            Text("\(l.strokes)str")
-                                .monospacedDigit()
-                                .frame(width: 52, alignment: .trailing)
-                            Text("SWOLF \(Int(l.swolf.rounded(.down)))")
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                                .frame(width: 76, alignment: .trailing)
-                        }
-                        .font(.caption)
-                    }
-                } header: {
-                    Text("本ごと（\(Int(report.poolLength))m）")
-                } footer: {
-                    if let best = report.bestLength, let dps = report.dps {
-                        Text("ベストペース \(fmtTime(best.duration / report.poolLength * 100))/100m（\(String(format: "%.1f", best.duration))s・半\(best.half) R\(best.rep) L\(best.num)）・DPS \(String(format: "%.2f", dps))m/ストローク")
-                    }
-                }
-            }
+            setSection(report)
+            intervalSection(report)
+            lapSection(report)
         }
     }
 
-    private func summaryGrid(_ report: SwimReport) -> some View {
-        VStack(spacing: 12) {
-            HStack {
-                stat("距離", fmtMeters(report.distance))
-                stat("ペース", "約" + fmtTime(report.pace100) + " /100m")
-            }
-            HStack {
-                stat("泳ぎ時間", fmtTime(report.movingTime))
-                stat("総経過時間", fmtTime(report.elapsed))
-            }
-            if let spl = report.strokesPerLengthMedian,
-               let swAvg = report.swolfAverage, let swBest = report.swolfBest {
-                HStack {
-                    stat("ストローク", "\(report.strokesTotal)（\(Int(spl))/本）")
-                    stat("SWOLF", "平均\(Int(swAvg.rounded()))・ベスト\(Int(swBest.rounded()))")
+    // MARK: - サマリー
+
+    private func summaryCard(_ report: SwimReport) -> some View {
+        VStack(spacing: 0) {
+            metricRow(
+                MetricTile(label: "距離", value: fmtMetersValue(report.distance),
+                           unit: "M", color: Metric.distance),
+                MetricTile(label: "タイム", value: fmtClock(report.movingTime),
+                           color: Metric.time))
+            Divider()
+            metricRow(
+                MetricTile(label: "平均ペース", value: fmtPace(report.pace100),
+                           unit: "/100M", color: Metric.pace),
+                MetricTile(label: "経過時間", value: fmtClock(report.elapsed),
+                           color: .secondary))
+            if let spl = report.strokesPerLapMedian, let swAvg = report.swolfAverage {
+                Divider()
+                metricRow(
+                    MetricTile(label: "ストローク", value: "\(report.strokesTotal)",
+                               color: Metric.stroke),
+                    MetricTile(label: "平均SWOLF", value: "\(Int(swAvg.rounded()))",
+                               color: Metric.swolf))
+                if let dps = report.dps {
+                    Divider()
+                    metricRow(
+                        MetricTile(label: "1ラップのストローク", value: "\(Int(spl))",
+                                   color: Metric.stroke),
+                        MetricTile(label: "ストローク長",
+                                   value: String(format: "%.2f", dps),
+                                   unit: "M", color: Metric.stroke))
                 }
             }
         }
         .padding(.vertical, 4)
     }
 
-    private func stat(_ label: String, _ value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title3.weight(.semibold))
-                .monospacedDigit()
+    private func metricRow(_ a: MetricTile, _ b: MetricTile) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            a
+            b
         }
-        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
     }
+
+    // MARK: - セット / インターバル / ラップ
+
+    private func setSection(_ report: SwimReport) -> some View {
+        Section {
+            ForEach(report.sets, id: \.index) { s in
+                HStack(spacing: 8) {
+                    Text("\(s.index)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, alignment: .leading)
+                    MetricCell(value: fmtMetersValue(s.distance), unit: "M",
+                               color: Metric.distance)
+                    MetricCell(value: fmtClock(s.movingTime), color: Metric.time)
+                    MetricCell(value: fmtPace(s.pace100), unit: "/100M",
+                               color: Metric.pace)
+                }
+            }
+        } header: {
+            Text("セット")
+        } footer: {
+            Text("大休憩で区切られた塊です")
+        }
+        .headerProminence(.increased)
+    }
+
+    private func intervalSection(_ report: SwimReport) -> some View {
+        Section {
+            HStack(spacing: 8) {
+                Text("").frame(width: 68, alignment: .leading)
+                ColumnHeader(text: "ラップ")
+                ColumnHeader(text: "距離")
+                ColumnHeader(text: "タイム")
+            }
+            ForEach(Array(report.intervals.enumerated()), id: \.offset) { _, iv in
+                HStack(spacing: 8) {
+                    HStack(spacing: 3) {
+                        Text("S\(iv.setNumber)-\(iv.number)")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        if iv.crossCheck {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .imageScale(.small)
+                        }
+                    }
+                    .frame(width: 68, alignment: .leading)
+                    MetricCell(value: "\(iv.laps)", color: .primary)
+                    MetricCell(value: fmtMetersValue(Double(iv.laps) * report.poolLength),
+                               unit: "M", color: Metric.distance)
+                    MetricCell(value: fmtClock(iv.swimTime), color: Metric.time)
+                }
+            }
+        } header: {
+            Text("インターバル")
+        } footer: {
+            Text("レストで区切られた連続泳ぎです。1ラップの標準タイムは \(String(format: "%.1f", report.typicalLapTime))秒 / \(Int(report.poolLength))m")
+        }
+        .headerProminence(.increased)
+    }
+
+    private func lapSection(_ report: SwimReport) -> some View {
+        Group {
+            if !report.laps.isEmpty {
+                Section {
+                    HStack(spacing: 8) {
+                        Text("").frame(width: 44, alignment: .leading)
+                        ColumnHeader(text: "タイム")
+                        ColumnHeader(text: "ストローク")
+                        ColumnHeader(text: "SWOLF")
+                    }
+                    ForEach(Array(report.laps.enumerated()), id: \.offset) { i, l in
+                        HStack(spacing: 8) {
+                            HStack(spacing: 4) {
+                                Text("\(i + 1)")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                if report.sets.count > 1 {
+                                    Text("S\(l.setNumber)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .frame(width: 44, alignment: .leading)
+                            MetricCell(value: String(format: "%.1f", l.duration),
+                                       unit: "S", color: Metric.time)
+                            MetricCell(value: "\(l.strokes)", color: Metric.stroke)
+                            MetricCell(value: "\(Int(l.swolf.rounded(.down)))",
+                                       color: Metric.swolf)
+                        }
+                    }
+                } header: {
+                    Text("ラップ（\(Int(report.poolLength))m）")
+                } footer: {
+                    if let best = report.bestLap {
+                        Text("ベストペース \(fmtPace(best.duration / report.poolLength * 100))/100m（\(String(format: "%.1f", best.duration))秒・セット\(best.setNumber) インターバル\(best.interval) ラップ\(best.number)）")
+                    }
+                }
+                .headerProminence(.increased)
+            }
+        }
+    }
+}
+
+/// 距離の数値だけ（単位は MetricTile 側が小さく付ける）。桁区切りは fmtMeters と揃える。
+func fmtMetersValue(_ m: Double) -> String {
+    String(fmtMeters(m).dropLast(2))
 }

@@ -1,11 +1,12 @@
 import SwiftUI
 import MokkoriCore
 
-/// 壁インターバル確認画面（Strava アップ前の最後の砦）。
+/// ラップ確認画面（Strava アップ前の最後の砦）。編集の実体は「ターン（壁）」で、
+/// 1行 = 1ラップ（前のターンを蹴ってからこのターンに着くまで）。
 /// 行 = 壁イベント + その前の泳ぎギャップ。ハイライト:
-///   橙 = ギャップがブロック中央値の ≳1.6倍（壁見逃し疑い）
-///   赤 = ≲0.6倍（偽壁疑い） / 「補完」バッジ = リズムリカバリ由来
-/// 修正 = 壁の追加（見逃しギャップの中点）/ 削除（偽壁・隣接マージ）→ 即時再計算。
+///   橙 = ラップタイムがセット中央値の ≳1.6倍（ターン見逃し疑い）
+///   赤 = ≲0.6倍（余計なターン疑い） / 「補完」バッジ = リズムリカバリ由来
+/// 修正 = ターンの追加（見逃しラップの中点）/ 削除（ラップをつなげる）→ 即時再計算。
 struct WallIntervalView: View {
     @Bindable var model: SessionAnalysisModel
     @State private var confirmReset = false
@@ -19,18 +20,18 @@ struct WallIntervalView: View {
                             .font(.title2.weight(.semibold))
                             .monospacedDigit()
                         Spacer()
-                        Text("泳ぎ " + fmtTime(report.movingTime))
+                        Text("タイム " + fmtClock(report.movingTime))
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                 } footer: {
-                    Text("修正すると距離・レップ・ペースが即時再計算されます")
+                    Text("修正すると距離・ラップ・ペースが即時再計算されます")
                 }
             }
 
             let blocks = Dictionary(grouping: model.intervals, by: \.blockIndex)
             ForEach(blocks.keys.sorted(), id: \.self) { bi in
-                Section("ブロック \(bi)") {
+                Section("セット \(bi)") {
                     ForEach(blocks[bi] ?? []) { row in
                         IntervalRow(row: row)
                             .swipeActions(edge: .trailing) {
@@ -38,27 +39,27 @@ struct WallIntervalView: View {
                                     Button(role: .destructive) {
                                         Task { await model.removeWall(wall) }
                                     } label: {
-                                        Label("壁を削除", systemImage: "trash")
+                                        Label("ターンを削除", systemImage: "trash")
                                     }
                                 }
                             }
                             .contextMenu {
                                 if row.kind != .blockEnd, let wall = row.wall {
                                     Button {
-                                        // 見逃し疑いギャップの中点に1壁追加
+                                        // 見逃し疑いのラップの中点にターンを1つ追加
                                         Task {
                                             await model.addWall(
                                                 at: wall.start - row.gap / 2)
                                         }
                                     } label: {
-                                        Label("この前のギャップに壁を追加",
+                                        Label("このラップの途中にターンを追加",
                                               systemImage: "plus.circle")
                                     }
                                     if row.kind == .turn {
                                         Button(role: .destructive) {
                                             Task { await model.removeWall(wall) }
                                         } label: {
-                                            Label("この壁を削除（隣とマージ）",
+                                            Label("このターンを削除（ラップをつなげる）",
                                                   systemImage: "trash")
                                         }
                                     }
@@ -68,7 +69,7 @@ struct WallIntervalView: View {
                 }
             }
         }
-        .navigationTitle("壁インターバル")
+        .navigationTitle("ラップ")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if model.isEdited {
@@ -120,17 +121,17 @@ private struct IntervalRow: View {
 
     private var title: String {
         switch row.kind {
-        case .turn: return "ターン壁 @\(Int(row.time))s"
-        case .rest: return "休憩 @\(Int(row.time))s"
-        case .blockEnd: return "ブロック終わり"
+        case .turn: return "ターン @\(Int(row.time))s"
+        case .rest: return "レスト @\(Int(row.time))s"
+        case .blockEnd: return "セット終わり"
         }
     }
 
     private var subtitle: String {
         switch row.flag {
-        case .ok: return "直前の泳ぎ"
-        case .missedSuspect: return "ギャップが長い → 壁見逃し疑い"
-        case .falseSuspect: return "ギャップが短い → 偽壁疑い"
+        case .ok: return "ラップタイム"
+        case .missedSuspect: return "長い → ターン見逃し疑い"
+        case .falseSuspect: return "短い → 余計なターン疑い"
         }
     }
 

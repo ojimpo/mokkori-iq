@@ -85,7 +85,7 @@ def check(name, exp):
     if total != exp["dist_total"]:
         fails.append(f"total dist: got {total}, expected {exp['dist_total']}")
 
-    st = re.search(r"strokes: 中央値 (\d+)/本 .*合計 (\d+)\s+\((\d+)/(\d+)本", out)
+    st = re.search(r"strokes: 中央値 (\d+)/ラップ .*合計 (\d+)\s+\((\d+)/(\d+)ラップ", out)
     sw = re.search(r"swolf:\s+平均 (\d+)", out)
     got_strokes = (int(st.group(1)), int(st.group(2)),
                    (int(st.group(3)), int(st.group(4)))) if st else None

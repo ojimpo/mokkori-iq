@@ -24,7 +24,7 @@ struct StravaUploadView: View {
 
         var help: String {
             switch self {
-            case .swimStart: return "1本目を泳ぎ出した時刻"
+            case .swimStart: return "1ラップ目を泳ぎ出した時刻"
             case .recordEnd: return "記録が終わった（スイッチOFF/満杯）時刻"
             }
         }
@@ -111,7 +111,7 @@ struct StravaUploadView: View {
         guard let report = model.report else { return nil }
         switch anchorMode {
         case .swimStart:
-            guard let first = report.reps.first else { return nil }
+            guard let first = report.intervals.first else { return nil }
             return anchorInput.addingTimeInterval(-first.span.start)
         case .recordEnd:
             return anchorInput.addingTimeInterval(-report.elapsed)

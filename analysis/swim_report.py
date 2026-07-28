@@ -1,5 +1,10 @@
-"""One-shot swim report: ingest a flash-logger CSV -> distance, pace, per-rep
-breakdown, stroke rate, and a Strava-ready summary. Conservative by policy.
+"""One-shot swim report: ingest a flash-logger CSV -> distance, pace, per-interval
+breakdown, stroke rate, and a Strava-ready summary.
+
+Terms follow Garmin (JA) and swim-practice usage:
+  lap      = one pool length (25m)
+  interval = continuous swimming between rests
+  set      = a chunk separated by a big rest
 
 This is the "device output": point it at a pulled session and it prints
 everything you'd log. Detection reuses the gz body-axis wall detector
@@ -10,11 +15,11 @@ now feeds a planned haptic "every N m" buzz, where a biased count drifts and
 buzzes at the wrong wall). Each rep is measured two independent ways and they
 have to agree:
 
-    lengths = min(wall_count, round(swim_time / typical_length_time))
+    laps = min(wall_count, round(swim_time / typical_lap_time))
 
 min() here is a physical constraint, not a bias: you cannot have swum more
-lengths than the swim time allows. Across both captured sessions (24 reps) the
-two terms agree on every rep, so min() never actually binds -- when it does, it
+laps than the swim time allows. Across both captured sessions (24 intervals) the
+two terms agree on every interval, so min() never actually binds -- when it does, it
 means detection is off and the report says so out loud (CROSS-CHECK line).
 The one case that used to bind (6/21 @2251s) was a fragmented stand and is now
 fixed at the source in turn_stand.detect_walls.
@@ -85,7 +90,7 @@ def median_cadence(sess, swim_gz=-2.0, win=8.0, hop=2.0, band=(0.3, 1.2)):
     return float(np.median(cyc)) if cyc else 0.0
 
 
-# --- 本ごとメトリクス (Garmin互換: ストローク数 / SWOLF / DPS / ベストペース) ---
+# --- ラップごとメトリクス (Garmin互換: ストローク数 / SWOLF / DPS / ベストペース) ---
 # 移植容易なプリミティブ（因果biquad＋ヒステリシス付きゼロクロス）だけで書く。
 # ここが Swift 移植 (app/MokkoriCore) のリファレンス実装で、パリティテストが
 # この数値をピン留めする。変更するときは Swift 側と regression_check を同時に更新。
@@ -119,10 +124,10 @@ def biquad_filter(x, c):
 
 
 def count_strokes(gyro_seg, prone_seg, coeffs):
-    """1本分のストロークサイクル数。各ジャイロ軸をバンドパスし、prone 区間の
+    """1ラップ分のストロークサイクル数。各ジャイロ軸をバンドパスし、prone 区間の
     帯域パワーが最大の軸を採用。ヒステリシス付き正方向ゼロクロス 1 回 =
     ロール 1 往復 = ガーミンの 1 ストローク。prone ゲートでウォームアップ・
-    退水のゴミカウントを防ぐ（本の境界内でも立ち上がり等はカウントしない）。"""
+    退水のゴミカウントを防ぐ（ラップの境界内でも立ち上がり等はカウントしない）。"""
     best_y, best_pow = None, -1.0
     for ax in range(gyro_seg.shape[1]):
         y = biquad_filter(gyro_seg[:, ax], coeffs)
@@ -145,7 +150,7 @@ def count_strokes(gyro_seg, prone_seg, coeffs):
 
 
 def length_spans(s0, s1, turns):
-    """レップ内の本ごとスパン: 壁を蹴った時刻（立ち終わり）→次の壁到着
+    """インターバル内のラップごとスパン: 壁を蹴った時刻（立ち終わり）→次の壁到着
     （立ち始まり）。立位時間は構造上含まれない。swim_segments と同じ流儀。"""
     pts = [s0]
     for a, b in sorted(x for x in turns if s0 <= x[0] <= s1):
@@ -173,16 +178,23 @@ def main():
     Lt = typical_length_time(t, prone, dt, d["turns"])
     pool = args.pool
 
-    halves = list(zip(d["starts"], d["ends"]))
+    blocks = list(zip(d["starts"], d["ends"]))
     total_len = 0
     total_swim = 0.0
-    half_rows = []
-    rep_lines = []
+    set_rows = []
+    interval_lines = []
     warnings = []
     coeffs = bandpass_coeffs(fs)
-    lengths = []            # 本ごと: dict(half, rep, num, dur, strokes)
-    for hi, (bs, be) in enumerate(halves):
+    laps = []               # ラップごと: dict(set, interval, num, dur, strokes)
+    # 用語は Garmin 日本語と水泳練習用語に合わせる:
+    #   セット = 大休憩(big-rest)で区切られた塊 / インターバル = レストで区切られた
+    #   連続泳ぎ区間 / ラップ = プールの片道(25m)。
+    # セット番号は「泳ぎのあるブロック」だけを 1 から数える（入水前やシャワーの
+    # 泳ぎゼロのブロックに番号を食わせない）。
+    set_no = 0
+    for bs, be in blocks:
         hl, hs = 0, 0.0
+        block_lines, block_warns, block_laps = [], [], []
         for ri, (s0, s1) in enumerate(swim_segments(bs, be, d["rests"])):
             m = (t >= s0) & (t <= s1)
             st = float(dt[m & prone].sum())
@@ -194,24 +206,32 @@ def main():
             hl += n
             hs += st
             if wall_len != pace_len:
-                warnings.append(
-                    f"   CROSS-CHECK 半{hi+1} レップ{ri+1} ({s0:.0f}-{s1:.0f}s): "
-                    f"壁カウント{wall_len}本 vs ペース推定{pace_len}本 -> {n}本を採用。"
-                    f"検出がずれている可能性（1本={st/max(wall_len,1):.1f}s）")
-            rep_lines.append(
-                f"   半{hi+1} レップ{ri+1}: 泳ぎ {fmt(st):>6}  "
-                f"-> {n}本 ({n*int(pool)}m)"
+                block_warns.append(
+                    f"   CROSS-CHECK セット{{s}} インターバル{ri+1} "
+                    f"({s0:.0f}-{s1:.0f}s): "
+                    f"壁カウント{wall_len}ラップ vs ペース推定{pace_len}ラップ -> "
+                    f"{n}ラップを採用。"
+                    f"検出がずれている可能性（1ラップ={st/max(wall_len,1):.1f}s）")
+            block_lines.append(
+                f"   セット{{s}} インターバル{ri+1}: 泳ぎ {fmt(st):>6}  "
+                f"-> {n}ラップ ({n*int(pool)}m)"
                 + (f"   [壁{wall_len}/ペース{pace_len}]" if args.verbose else ""))
             for li, (l0, l1) in enumerate(length_spans(s0, s1, d["turns"])):
                 lm = np.flatnonzero((t >= l0) & (t <= l1))
                 if not len(lm):
                     continue
-                lengths.append(dict(
-                    half=hi + 1, rep=ri + 1, num=li + 1, dur=l1 - l0,
+                block_laps.append(dict(
+                    set=0, interval=ri + 1, num=li + 1, dur=l1 - l0,
                     strokes=count_strokes(sess["gyro"][lm], prone[lm], coeffs)))
         if hl:
+            set_no += 1
             pace = hs / (hl * pool) * 100
-            half_rows.append((hi + 1, hl * pool, hs, pace))
+            set_rows.append((set_no, hl * pool, hs, pace))
+            interval_lines += [s.replace("{s}", str(set_no)) for s in block_lines]
+            warnings += [s.replace("{s}", str(set_no)) for s in block_warns]
+            for lap in block_laps:
+                lap["set"] = set_no
+            laps += block_laps
             total_len += hl
             total_swim += hs
 
@@ -221,50 +241,50 @@ def main():
     avg_pace = total_swim / dist * 100 if dist else 0.0
 
     print(f"=== swim report: {os.path.basename(args.csv)} ===")
-    print(f"typical length time: {Lt:.1f}s/{int(pool)}m  (pool {int(pool)}m, "
+    print(f"typical lap time: {Lt:.1f}s/{int(pool)}m  (pool {int(pool)}m, "
           f"fs {fs:.1f}Hz)")
-    print("\n".join(rep_lines))
+    print("\n".join(interval_lines))
     if warnings:
         print()
         print("\n".join(warnings))
-    print("\n  half      dist   moving   pace/100m")
-    for h, hd, hsw, hp in half_rows:
-        print(f"   {h:>2}   {int(hd):>5}m  {fmt(hsw):>6}   {fmt(hp)}")
+    print("\n  set       dist   moving   pace/100m")
+    for s, sd, ssw, sp in set_rows:
+        print(f"   {s:>2}   {int(sd):>5}m  {fmt(ssw):>6}   {fmt(sp)}")
 
-    # 本ごとメトリクス（strokes>0 の本だけで集計。0 は検出不能本 = 集計から除外）
-    stroked = [l for l in lengths if l["strokes"] > 0]
-    if args.verbose and lengths:
-        print("\n  per-length (dur / strokes / SWOLF):")
-        for l in lengths:
-            print(f"   半{l['half']} レップ{l['rep']} L{l['num']}: "
+    # ラップごとメトリクス（strokes>0 のラップだけで集計。0 は検出不能 = 除外）
+    stroked = [l for l in laps if l["strokes"] > 0]
+    if args.verbose and laps:
+        print("\n  per-lap (dur / strokes / SWOLF):")
+        for l in laps:
+            print(f"   セット{l['set']} インターバル{l['interval']} L{l['num']}: "
                   f"{l['dur']:5.1f}s  {l['strokes']:>2}str  "
                   f"SWOLF {l['dur'] + l['strokes']:.0f}")
     if stroked:
         spl = [l["strokes"] for l in stroked]
         swolf = [l["dur"] + l["strokes"] for l in stroked]
         best = min(stroked, key=lambda l: l["dur"])
-        total_strokes = sum(l["strokes"] for l in lengths)
+        total_strokes = sum(l["strokes"] for l in laps)
         spl_med = float(np.median(spl))
-        print(f"\n  strokes: 中央値 {spl_med:.0f}/本 "
+        print(f"\n  strokes: 中央値 {spl_med:.0f}/ラップ "
               f"(IQR {np.percentile(spl, 25):.0f}-{np.percentile(spl, 75):.0f})  "
-              f"合計 {total_strokes}  ({len(stroked)}/{len(lengths)}本で計測)")
+              f"合計 {total_strokes}  ({len(stroked)}/{len(laps)}ラップで計測)")
         print(f"  swolf:   平均 {np.mean(swolf):.0f}  ベスト {min(swolf):.0f}   "
               f"dps {pool / spl_med:.2f}m/ストローク")
         print(f"  best:    {fmt(best['dur'] / pool * 100)} /100m "
-              f"({best['dur']:.1f}s/本, 半{best['half']} レップ{best['rep']} "
-              f"L{best['num']})")
+              f"({best['dur']:.1f}s/ラップ, セット{best['set']} "
+              f"インターバル{best['interval']} L{best['num']})")
 
     print("\n" + "-" * 42)
     hdr = f"\U0001F4C5 {args.date}  " if args.date else ""
     print(f"{hdr}プールスイム（自由形・{int(pool)}mプール）")
     print(f"  距離        {int(dist):>5} m")
-    print(f"  ペース       約{fmt(avg_pace)} /100m")
-    print(f"  泳ぎ時間     {fmt(total_swim)}（moving time）")
-    print(f"  総経過時間   {fmt(elapsed)}（休憩込み）")
+    print(f"  平均ペース    {fmt(avg_pace)} /100m")
+    print(f"  タイム       {fmt(total_swim)}（泳ぎのみ = moving time）")
+    print(f"  経過時間     {fmt(elapsed)}（レスト込み）")
     if cad:
         print(f"  ストローク率  約{cad:.0f} cyc/min（≒{cad*2:.0f} strokes/min）")
     if stroked:
-        print(f"  ストローク    合計 {total_strokes}（中央値 {spl_med:.0f}/本・"
+        print(f"  ストローク    合計 {total_strokes}（中央値 {spl_med:.0f}/ラップ・"
               f"SWOLF平均 {np.mean(swolf):.0f}）")
     if d["triples"]:
         print(f"  タップ境界   {len(d['triples'])}個復元 "

@@ -2,15 +2,15 @@ import XCTest
 @testable import MokkoriCore
 
 /// ペースグラフのデータモデル（軸の切り方・異常値・傾向線）を実データでピン留めする。
-/// 描画そのものは UI テスト側で見るが、**何本が強調されるか**はここで固定しておく
+/// 描画そのものは UI テスト側で見るが、**何ラップが強調されるか**はここで固定しておく
 /// （閾値を緩めるとラベルだらけになって「一目で分かる」が壊れるため）。
 final class PaceChartTests: XCTestCase {
 
     struct Expectation {
         let rows: Int
-        let emphasized: Int      // 強調される本（異常値 or 疑い）
-        let boundaries: Int      // レップ境界
-        let blockBoundaries: Int // うちブロック境界（大休憩）
+        let emphasized: Int      // 強調されるラップ（異常値 or 疑い）
+        let boundaries: Int      // インターバル境界
+        let blockBoundaries: Int // うちセット境界（大休憩）
         let bestSeconds: Double
         let trendDelta: Double   // セッションを通したペース変化（s /100m）
     }
@@ -27,20 +27,20 @@ final class PaceChartTests: XCTestCase {
         let chart = PaceChart.make(report: report, detection: d)
 
         // 軸・傾向の実値は目視調整の手がかりとして残す
-        print(String(format: "[%@] 本=%d 強調=%d 軸=%.1f〜%.1f 平均=%.1f 傾向=%+.1f ベスト=%.2f 境界=%d(ブロック%d)",
+        print(String(format: "[%@] ラップ=%d 強調=%d 軸=%.1f〜%.1f 平均=%.1f 傾向=%+.1f ベスト=%.2f 境界=%d(セット%d)",
                      name, chart.rows.count, chart.rows.filter(\.isEmphasized).count,
                      chart.axisLo, chart.axisHi, chart.averagePace100,
                      chart.trendDelta, chart.best?.duration ?? 0,
                      chart.boundaries.count, chart.boundaries.filter(\.isBlock).count))
 
-        XCTAssertEqual(chart.rows.count, exp.rows, "\(name): 本数")
+        XCTAssertEqual(chart.rows.count, exp.rows, "\(name): ラップ数")
         XCTAssertEqual(chart.rows.filter(\.isEmphasized).count, exp.emphasized,
-                       "\(name): 強調される本")
-        XCTAssertEqual(chart.boundaries.count, exp.boundaries, "\(name): レップ境界")
+                       "\(name): 強調されるラップ")
+        XCTAssertEqual(chart.boundaries.count, exp.boundaries, "\(name): インターバル境界")
         XCTAssertEqual(chart.boundaries.filter(\.isBlock).count, exp.blockBoundaries,
-                       "\(name): ブロック境界")
+                       "\(name): セット境界")
         XCTAssertEqual(chart.best?.duration ?? 0, exp.bestSeconds, accuracy: 0.05,
-                       "\(name): ベスト1本")
+                       "\(name): ベスト1ラップ")
         XCTAssertEqual(chart.trendDelta, exp.trendDelta, accuracy: 0.1,
                        "\(name): 傾向")
 
@@ -56,14 +56,14 @@ final class PaceChartTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(chart.axisHi,
                                     chart.averagePace100 + PaceChart.axisMinHalfWidth)
 
-        // 強調される本は全体のごく一部（＝ラベルが埋まらない）
+        // 強調されるラップは全体のごく一部（＝ラベルが埋まらない）
         XCTAssertLessThan(Double(chart.rows.filter(\.isEmphasized).count),
                           Double(exp.rows) * 0.2,
                           "\(name): 強調が多すぎてラベルが埋まる")
         return chart
     }
 
-    /// 実データ2セッションはどちらも強調ゼロ。最遅の本でもブロック中央値の 1.17 倍で、
+    /// 実データ2セッションはどちらも強調ゼロ。最遅のラップでもセット中央値の 1.17 倍で、
     /// 判定値 1.25 倍に届かない（＝この泳者のペースはそれだけ揃っている）。
     /// 強調は「検出がずれた／本当に崩れた」ときだけ出る非常口という位置づけで、
     /// 実際に色が付く経路は下の合成データテストで担保する。
@@ -87,23 +87,23 @@ final class PaceChartTests: XCTestCase {
     // MARK: - 合成データ（実データでは通らない経路）
 
     private func fakeReport(durations: [Double], pool: Double = 25.0) -> SwimReport {
-        var lengths = [SwimReport.Length]()
+        var laps = [SwimReport.Lap]()
         var t = 0.0
         for (i, d) in durations.enumerated() {
-            lengths.append(SwimReport.Length(half: 1, rep: 1, num: i + 1,
-                                             span: Span(t, t + d), strokes: 14))
+            laps.append(SwimReport.Lap(setNumber: 1, interval: 1, number: i + 1,
+                                       span: Span(t, t + d), strokes: 14))
             t += d
         }
         let total = durations.reduce(0, +)
-        let rep = SwimReport.Rep(half: 1, rep: 1, span: Span(0, t), swimTime: total,
+        let interval = SwimReport.Interval(setNumber: 1, number: 1, span: Span(0, t), swimTime: total,
                                  wallCount: durations.count, paceCount: durations.count,
-                                 lengths: durations.count)
+                                 laps: durations.count)
         let dist = Double(durations.count) * pool
-        return SwimReport(typicalLengthTime: 30, poolLength: pool, reps: [rep],
-                          halves: [SwimReport.Half(index: 1, distance: dist,
+        return SwimReport(typicalLapTime: 30, poolLength: pool, intervals: [interval],
+                          sets: [SwimReport.SetSummary(index: 1, distance: dist,
                                                    movingTime: total,
                                                    pace100: total / dist * 100)],
-                          lengths: lengths, distance: dist, movingTime: total,
+                          laps: laps, distance: dist, movingTime: total,
                           elapsed: total)
     }
 
@@ -112,7 +112,7 @@ final class PaceChartTests: XCTestCase {
                       recovered: [], blockStarts: [], blockEnds: [])
     }
 
-    /// 中央値から ±25% 外れた本だけが強調される（隣接の普通の本は巻き込まない）。
+    /// 中央値から ±25% 外れたラップだけが強調される（隣接の普通のラップは巻き込まない）。
     func testOutlierEmphasis() {
         // 中央値 30s → 遅い異常値 38s(1.27倍) / 速い異常値 22s(0.73倍)、
         // 37s(1.23倍) と 23s(0.77倍) は境界の内側なので強調しない
@@ -138,7 +138,7 @@ final class PaceChartTests: XCTestCase {
             detection: emptyDetection)
         XCTAssertFalse(chart.isTrendFlat)
         XCTAssertGreaterThan(chart.trendDelta, 0)
-        // 1本あたり +0.5s = 100m 換算 +2s。10本の中点間（225m）で +18s だが、
+        // 1ラップあたり +0.5s = 100m 換算 +2s。10ラップの中点間（225m）で +18s だが、
         // 傾向線はグラフの上端(0m)から下端(250m)まで引くので +20s になる。
         XCTAssertEqual(chart.trendDelta, 20.0, accuracy: 0.5)
     }
@@ -146,9 +146,9 @@ final class PaceChartTests: XCTestCase {
     /// min() が効いて距離が食い違ったセッションでは注記用の差が出る。
     func testDistanceMismatchIsReported() {
         var report = fakeReport(durations: Array(repeating: 30, count: 8))
-        report = SwimReport(typicalLengthTime: report.typicalLengthTime,
-                            poolLength: report.poolLength, reps: report.reps,
-                            halves: report.halves, lengths: report.lengths,
+        report = SwimReport(typicalLapTime: report.typicalLapTime,
+                            poolLength: report.poolLength, intervals: report.intervals,
+                            sets: report.sets, laps: report.laps,
                             distance: 175, movingTime: report.movingTime,
                             elapsed: report.elapsed)
         let chart = PaceChart.make(report: report, detection: emptyDetection)

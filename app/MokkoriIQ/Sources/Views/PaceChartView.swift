@@ -2,16 +2,16 @@ import SwiftUI
 import Charts
 import MokkoriCore
 
-/// 本ごとのペースを距離順に並べた横バーグラフ（設計は docs/pace_chart_design.md）。
+/// ラップごとのペースを距離順に並べた横バーグラフ（設計は docs/pace_chart_design.md）。
 ///
-/// 縦軸 = 距離（上 0m → 下）で泳ぎ進む向きと同じ。1本 = 1バーで**左端揃え**なので、
+/// 縦軸 = 距離（上 0m → 下）で泳ぎ進む向きと同じ。1ラップ = 1バーで**左端揃え**なので、
 /// 右端の輪郭がそのままペースの推移になる。上から下へ目で追って、
 /// 短くなっていけばビルドアップ、伸びていけば垂れ。
 struct PaceChartView: View {
     let chart: PaceChart
     @State private var selected: PaceChart.Row?
 
-    /// 1本の帯 = バー 10pt + 隙間 2pt。**セッションによらず固定**にする
+    /// 1ラップの帯 = バー 10pt + 隙間 2pt。**セッションによらず固定**にする
     /// （縮めて全部を1画面に押し込むと、バーの太さが変わって比較できなくなる）。
     private static let band = 12.0
     private static let barGap = 2.0
@@ -37,7 +37,7 @@ struct PaceChartView: View {
             .frame(height: plotHeight + Self.axisBand)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("paceChart")
-            .accessibilityLabel("本ごとのペース")
+            .accessibilityLabel("ラップごとのペース")
             .accessibilityValue(trendSentence)
 
             caption
@@ -67,7 +67,7 @@ struct PaceChartView: View {
                 .foregroundStyle(row.isEmphasized ? Palette.emphasis : Palette.bar)
             }
 
-            // 直接ラベルは「強調された本」と「ベスト」だけ。全バーに数値は振らない。
+            // 直接ラベルは「強調されたラップ」と「ベスト」だけ。全バーに数値は振らない。
             ForEach(labelled) { row in
                 RectangleMark(
                     xStart: .value("", row.pace100),
@@ -85,17 +85,17 @@ struct PaceChartView: View {
                 }
             }
 
-            // レップ境界（休憩）。ブロック境界は少し強く。
+            // インターバル境界（レスト）。セット境界は太さで区別する（色は同じ＝同じ意味だから）。
             ForEach(chart.boundaries) { b in
                 RuleMark(y: .value("境界", b.distance))
-                    .lineStyle(StrokeStyle(lineWidth: b.isBlock ? 1.5 : 1))
-                    .foregroundStyle(Palette.muted.opacity(b.isBlock ? 0.9 : 0.45))
+                    .lineStyle(StrokeStyle(lineWidth: b.isBlock ? 2 : 1))
+                    .foregroundStyle(Palette.rest)
                     // ラベルはプロットの内側（線の上・右寄せ）に置く。外側に出すと
                     // カードの右端で切れて "10:3…" になる。
                     .annotation(position: .top, alignment: .trailing, spacing: 1,
                                 overflowResolution: .init(x: .fit(to: .plot),
                                                           y: .disabled)) {
-                        Text(b.isBlock ? "\(fmtRest(b.rest)) 休憩" : fmtRest(b.rest))
+                        Text(b.isBlock ? "\(fmtRest(b.rest)) レスト" : fmtRest(b.rest))
                             .font(.system(size: 9))
                             .monospacedDigit()
                             .foregroundStyle(Palette.muted)
@@ -103,18 +103,12 @@ struct PaceChartView: View {
             }
 
             RuleMark(x: .value("平均", chart.averagePace100))
-                .lineStyle(StrokeStyle(lineWidth: 1))
-                .foregroundStyle(Palette.muted)
+                .lineStyle(StrokeStyle(lineWidth: 1.5))
+                .foregroundStyle(Palette.average)
 
-            // 傾向線（ペース vs 距離の線形回帰）。問い「垂れているか」に直接答える。
-            LineMark(x: .value("傾向", chart.trendAtStart), y: .value("", 0.0),
-                     series: .value("", "trend"))
-                .lineStyle(StrokeStyle(lineWidth: 1.5))
-                .foregroundStyle(Palette.muted.opacity(0.8))
-            LineMark(x: .value("傾向", chart.trendAtEnd),
-                     y: .value("", chart.totalMeters), series: .value("", "trend"))
-                .lineStyle(StrokeStyle(lineWidth: 1.5))
-                .foregroundStyle(Palette.muted.opacity(0.8))
+            // 傾向線（回帰直線）は引かない。バーの右端の輪郭で既に読めるうえ、
+            // 線を重ねると平均線・レスト線と合わせて3種類の線が交差して読みづらかった。
+            // 「垂れているか」は下の一行（trendSentence）で言葉にする。
 
             if let s = selected {
                 PointMark(x: .value("", chart.axisLo), y: .value("", s.distanceMid))
@@ -165,17 +159,15 @@ struct PaceChartView: View {
             Text(trendSentence)
                 .font(.footnote)
             if let s = selected {
-                Text("\(s.id + 1)本目（半\(s.half) R\(s.rep) L\(s.num)）・\(String(format: "%.1f", s.duration))s・\(fmtPace(s.pace100))/100m・\(s.strokes)ストローク・SWOLF \(Int(s.swolf.rounded(.down)))")
+                Text("\(s.id + 1)ラップ目（セット\(s.setNumber)）・\(String(format: "%.1f", s.duration))秒・\(fmtPace(s.pace100))/100m・\(s.strokes)ストローク・SWOLF \(Int(s.swolf.rounded(.down)))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text("バーをタップすると、その本の詳細が出ます")
+                Text("バーをタップするとラップの詳細が出ます")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(legendSentence)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            legend
             if let m = chart.distanceMismatch {
                 Label("グラフは壁ベースの \(fmtMeters(chart.totalMeters))。レポートの距離とは \(fmtMeters(abs(m))) 違います（CROSS-CHECK）",
                       systemImage: "exclamationmark.triangle.fill")
@@ -195,16 +187,30 @@ struct PaceChartView: View {
         return String(format: "後半にかけて %+.1fs/100m（%@）", d, word)
     }
 
-    private var legendSentence: String {
-        let base = "縦線 = 平均・細い斜線 = 傾向・横線 = 休憩"
-        return chart.rows.contains(where: \.isEmphasized)
-            ? base + "・橙 = ブロック中央値から ±25% 外れた本"
-            : base
+    /// 線の意味は色だけに載せない（向きと言葉も添える）。
+    private var legend: some View {
+        HStack(spacing: 12) {
+            legendItem(Palette.average, "平均 \(fmtPace(chart.averagePace100))")
+            if !chart.boundaries.isEmpty { legendItem(Palette.rest, "レスト") }
+            if chart.rows.contains(where: \.isEmphasized) {
+                legendItem(Palette.emphasis, "中央値から ±25%")
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+
+    private func legendItem(_ color: Color, _ label: String) -> some View {
+        HStack(spacing: 4) {
+            Capsule().fill(color).frame(width: 14, height: 2)
+            Text(label)
+        }
     }
 
     // MARK: - 補助
 
-    /// ラベルを付ける本 = 強調された本 + ベスト（重複は1つに）
+    /// ラベルを付けるラップ = 強調されたラップ + ベスト（重複は1つに）
     private var labelled: [PaceChart.Row] {
         var out = chart.rows.filter(\.isEmphasized)
         if let best = chart.best, !out.contains(best) { out.append(best) }
@@ -226,13 +232,7 @@ struct PaceChartView: View {
         selected = chart.rows[idx].id == selected?.id ? nil : chart.rows[idx]
     }
 
-    /// ペース（s /100m）→ "1:53"。軸ラベルなので小数は落とす。
-    private func fmtPace(_ s: Double) -> String {
-        let v = Int(s.rounded())
-        return String(format: "%d:%02d", v / 60, v % 60)
-    }
-
-    /// 休憩時間 → "45s" / "10:32"
+    /// レストの長さ → "45s" / "10:32"
     private func fmtRest(_ s: Double) -> String {
         let v = Int(s.rounded())
         return v < 60 ? "\(v)s" : String(format: "%d:%02d", v / 60, v % 60)
@@ -245,6 +245,10 @@ struct PaceChartView: View {
 private enum Palette {
     static let bar = dynamic(light: 0x2a78d6, dark: 0x3987e5)
     static let emphasis = dynamic(light: 0xeb6834, dark: 0xd95926)
+    /// 平均線（縦・1本だけなので強く出してよい）
+    static let average = dynamic(light: 0xc0479f, dark: 0xcf62ad)
+    /// レスト線（横に何本も出るので落ち着いた色にする）
+    static let rest = dynamic(light: 0x2e9e6b, dark: 0x35a273)
     static let muted = Color(rgb: 0x898781)          // 両モード共通
     static let surface = dynamic(light: 0xfcfcfb, dark: 0x1a1a19)
 

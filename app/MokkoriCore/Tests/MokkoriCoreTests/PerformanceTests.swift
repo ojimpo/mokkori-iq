@@ -30,6 +30,6 @@ final class PerformanceTests: XCTestCase {
         let d = time("detectWalls") { WallDetector.detectWalls(sess) }
         let report = time("makeReport") { SwimReporter.makeReport(sess, detection: d) }
         _ = time("intervals") { WallIntervalTable.rows(for: d) }
-        print("  samples=\(sess.count) walls=\(d.turns.count) lengths=\(report.lengths.count)")
+        print("  samples=\(sess.count) walls=\(d.turns.count) laps=\(report.laps.count)")
     }
 }

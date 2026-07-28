@@ -1,14 +1,14 @@
 import Foundation
 
-/// 壁インターバル表の1行 = 1本（壁イベントからその前の泳ぎ区間を見る）。
+/// ラップ表の1行 = 1ラップ（ターンイベントからその前の泳ぎ区間を見る）。
 /// ハイライト規則は解析側の知見を流用（docs/phase2_app_plan.md）:
-///   泳ぎギャップがブロック中央値の ≳1.6倍 = 壁見逃し疑い / ≲0.6倍 = 偽壁疑い。
+///   ラップタイムがセット中央値の ≳1.6倍 = ターン見逃し疑い / ≲0.6倍 = 余計なターン疑い。
 ///   リズムリカバリで補完した壁は明示。
 public struct WallInterval: Identifiable, Equatable {
     public enum Kind: String {
-        case turn      // 途中ターン壁
-        case rest      // レップ境界（水中立ち休憩 / ベンチ）
-        case blockEnd  // ブロック終端（big-rest または記録終了）
+        case turn      // 途中のターン
+        case rest      // インターバル境界（水中立ちレスト / ベンチ）
+        case blockEnd  // セット終端（big-rest または記録終了）
     }
     public enum Flag: String {
         case ok
@@ -17,7 +17,7 @@ public struct WallInterval: Identifiable, Equatable {
     }
 
     public let id: Int             // 全体での通し行番号
-    public let blockIndex: Int     // 1-based
+    public let blockIndex: Int     // 1-based セット番号（泳ぎのあるブロックだけ）
     public let wall: Span?         // この行の終端イベント（blockEnd 終端では nil あり）
     public let kind: Kind
     public let gap: Double         // 泳ぎギャップ: 前の立ち終わり → この立ち始まり
@@ -35,12 +35,16 @@ public enum WallIntervalTable {
         var out = [WallInterval]()
         var id = 0
         let recovered = Set(d.recovered)
-        for (bi, (bs, be)) in zip(d.blockStarts, d.blockEnds).enumerated() {
+        // セット番号は行が出るブロックだけを 1 から数える（入水前やシャワーの
+        // 泳ぎゼロのブロックに番号を食わせない）。レポートの「セット」と揃える。
+        var bi = 0
+        for (bs, be) in zip(d.blockStarts, d.blockEnds) {
             var events: [(Span, WallInterval.Kind)] =
                 d.turns.filter { bs <= $0.start && $0.start <= be }.map { ($0, .turn) }
                 + d.rests.filter { bs <= $0.start && $0.start <= be }.map { ($0, .rest) }
             events.sort { $0.0 < $1.0 }
             guard !events.isEmpty else { continue }
+            bi += 1
 
             var gaps = [Double]()
             var prevEnd = bs
@@ -60,7 +64,7 @@ public enum WallIntervalTable {
                     if g >= 1.6 * med { flag = .missedSuspect }
                     else if g <= 0.6 * med { flag = .falseSuspect }
                 }
-                out.append(WallInterval(id: id, blockIndex: bi + 1, wall: span,
+                out.append(WallInterval(id: id, blockIndex: bi, wall: span,
                                         kind: kind, gap: g,
                                         isRecovered: recovered.contains(span),
                                         flag: flag))
@@ -68,7 +72,7 @@ public enum WallIntervalTable {
             }
             // ブロック終端行（最後の壁 → ブロック終わりの泳ぎ）
             let lastEnd = events[events.count - 1].0.end
-            out.append(WallInterval(id: id, blockIndex: bi + 1,
+            out.append(WallInterval(id: id, blockIndex: bi,
                                     wall: Span(be, be), kind: .blockEnd,
                                     gap: be - lastEnd, isRecovered: false,
                                     flag: .ok))

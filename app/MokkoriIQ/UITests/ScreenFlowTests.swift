@@ -14,6 +14,9 @@ final class ScreenFlowTests: XCTestCase {
     /// 表示は fmtMeters を通すので桁区切りが入る（画面ごとにブレないことも兼ねて検証）
     let distance = "1,050 m"
     let distanceAfterRemovingOneWall = "1,025 m"
+    /// レポート画面は Apple フィットネス流に「値」と「単位」を分けて描くので、
+    /// 単位なしの数値で照合する（一覧・確認画面は fmtMeters のまま）
+    let distanceValue = "1,050"
 
     func makeApp(session: String? = nil) -> XCUIApplication {
         let csv = URL(fileURLWithPath: #filePath)
@@ -66,14 +69,14 @@ final class ScreenFlowTests: XCTestCase {
         row.tap()
 
         // レポート: 距離・ペース・ストローク系が出ること
-        XCTAssertTrue(app.staticTexts[distance].waitForExistence(timeout: 20),
+        XCTAssertTrue(app.staticTexts[distanceValue].waitForExistence(timeout: 20),
                       "レポートに距離が出ない")
         XCTAssertTrue(app.staticTexts["ストローク"].exists, "ストローク行が無い")
-        XCTAssertTrue(app.staticTexts["SWOLF"].exists, "SWOLF 行が無い")
-        XCTAssertTrue(scrollTo(app, "レップ内訳"), "レップ内訳が無い")
+        XCTAssertTrue(app.staticTexts["平均SWOLF"].exists, "SWOLF 行が無い")
+        XCTAssertTrue(scrollTo(app, "インターバル"), "インターバルのセクションが無い")
 
         // 本ごとセクション（ガーミン互換メトリクス）
-        XCTAssertTrue(scrollTo(app, "本ごと（25m）"), "本ごとセクションが無い")
+        XCTAssertTrue(scrollTo(app, "ラップ（25m）"), "ラップのセクションが無い")
     }
 
     /// ペースグラフ（docs/pace_chart_design.md）。数値は MokkoriCore のテストで
@@ -86,7 +89,7 @@ final class ScreenFlowTests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 60))
         row.tap()
 
-        XCTAssertTrue(app.staticTexts[distance].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts[distanceValue].waitForExistence(timeout: 20))
         XCTAssertTrue(scrollTo(app, "ペースの推移"), "ペースの推移セクションが無い")
         dump(app, "pace_chart")
 
@@ -94,7 +97,7 @@ final class ScreenFlowTests: XCTestCase {
         let trend = app.staticTexts.matching(
             NSPredicate(format: "label CONTAINS '/100m' AND (label CONTAINS '垂れ' OR label CONTAINS 'ビルドアップ' OR label CONTAINS 'ほぼ一定')"))
         XCTAssertGreaterThan(trend.count, 0, "傾向の要約が出ていない")
-        XCTAssertTrue(app.staticTexts["バーをタップすると、その本の詳細が出ます"].exists,
+        XCTAssertTrue(app.staticTexts["バーをタップするとラップの詳細が出ます"].exists,
                       "タップの案内が無い")
 
         // バーをタップすると、その本の詳細（本タイム/ストローク/SWOLF）が出る
@@ -102,7 +105,7 @@ final class ScreenFlowTests: XCTestCase {
         XCTAssertTrue(chart.exists, "グラフ本体が見つからない")
         chart.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5)).tap()
         let detail = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS '本目（半' AND label CONTAINS 'SWOLF'"))
+            NSPredicate(format: "label CONTAINS 'ラップ目' AND label CONTAINS 'SWOLF'"))
         XCTAssertTrue(detail.firstMatch.waitForExistence(timeout: 5),
                       "バーをタップしても本の詳細が出ない")
         dump(app, "pace_chart_selected")
@@ -120,15 +123,17 @@ final class ScreenFlowTests: XCTestCase {
             let row = app.staticTexts[csv]
             XCTAssertTrue(row.waitForExistence(timeout: 60))
             row.tap()
-            XCTAssertTrue(app.staticTexts["泳ぎ時間"].waitForExistence(timeout: 20))
+            XCTAssertTrue(app.staticTexts["タイム"].waitForExistence(timeout: 20))
             let short = csv.replacingOccurrences(of: "swim_", with: "")
                 .replacingOccurrences(of: ".csv", with: "")
             scrollTo(app, "ペースの推移")
             dump(app, "\(tag)_\(short)_top")
             // グラフの末尾とキャプション（傾向の一行）まで送る
-            let caption = app.staticTexts["バーをタップすると、その本の詳細が出ます"]
+            let caption = app.staticTexts["バーをタップするとラップの詳細が出ます"]
             for _ in 0..<8 where !caption.isHittable { app.swipeUp(velocity: .slow) }
             dump(app, "\(tag)_\(short)_bottom")
+            scrollTo(app, "ラップ（25m）")
+            dump(app, "\(tag)_\(short)_laps")
             app.terminate()
         }
     }
@@ -141,26 +146,26 @@ final class ScreenFlowTests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 60))
         row.tap()
 
-        app.buttons["壁インターバルを確認・修正"].firstMatch.tap()
+        app.buttons["ラップを確認・修正"].firstMatch.tap()
 
         // 確認画面: ブロックごとの行が出る
         XCTAssertTrue(app.staticTexts[distance].waitForExistence(timeout: 20),
                       "確認画面に距離が出ない")
-        // ブロック番号は検出ブロックの通し番号。入水前などの壁ゼロのブロックは
-        // 行が無いので、先頭が「ブロック 1」とは限らない（7/28 は 2 から始まる）
+        // セット番号は泳ぎのあるブロックだけを 1 から数える（入水前などの
+        // 泳ぎゼロのブロックは番号を食わない）
         XCTAssertTrue(app.staticTexts.matching(
-            NSPredicate(format: "label BEGINSWITH 'ブロック '")).count > 0,
-            "ブロック見出しが無い")
+            NSPredicate(format: "label BEGINSWITH 'セット '")).count > 0,
+            "セット見出しが無い")
 
         let turnCells = app.cells.containing(.staticText, identifier: nil)
         XCTAssertGreaterThan(turnCells.count, 5, "壁インターバルの行が少なすぎる")
 
         // 壁を1つ消すと距離が即座に 25m 減る（＝再計算が効いている）
         let firstTurn = app.staticTexts.matching(
-            NSPredicate(format: "label BEGINSWITH 'ターン壁'")).firstMatch
-        XCTAssertTrue(firstTurn.waitForExistence(timeout: 10), "ターン壁の行が無い")
+            NSPredicate(format: "label BEGINSWITH 'ターン'")).firstMatch
+        XCTAssertTrue(firstTurn.waitForExistence(timeout: 10), "ターンの行が無い")
         firstTurn.swipeLeft()
-        app.buttons["壁を削除"].firstMatch.tap()
+        app.buttons["ターンを削除"].firstMatch.tap()
 
         XCTAssertTrue(app.staticTexts[distanceAfterRemovingOneWall]
                         .waitForExistence(timeout: 20),

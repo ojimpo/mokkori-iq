@@ -22,10 +22,10 @@ final class ParityTests: XCTestCase {
         let rests: Int
         let bigs: Int
         let recoveredAt: [Double]   // 復元壁の中点時刻（±5s 許容 = regression_check の TOL_S）
-        let distHalves: [Int]
+        let distSets: [Int]
         let distTotal: Int
-        // 本ごとメトリクス（regression_check と同じピン留め値）
-        let lengthCount: Int        // 本数（全本で strokes>0 = 計測可能）
+        // ラップごとメトリクス（regression_check と同じピン留め値）
+        let lapCount: Int        // ラップ数（全ラップで strokes>0 = 計測可能）
         let strokesTotal: Int
         let splMedian: Double
         let swolfAvgRounded: Int
@@ -50,22 +50,30 @@ final class ParityTests: XCTestCase {
         }
 
         let report = SwimReporter.makeReport(sess, detection: d)
-        XCTAssertEqual(report.halves.map { Int($0.distance) }, exp.distHalves,
-                       "\(name): half distances")
+        XCTAssertEqual(report.sets.map { Int($0.distance) }, exp.distSets,
+                       "\(name): set distances")
         XCTAssertEqual(Int(report.distance), exp.distTotal, "\(name): total distance")
 
-        // 全レップで壁カウントとペース推定が一致（min() 不発）していることも
+        // セット番号は泳ぎのあるブロックだけを 1 から連番で数える。検出ブロックの
+        // 通し番号をそのまま出すと、入水前やシャワーのブロックが番号を食って
+        // 7/28 が「セット2 / セット3」から始まってしまう（2026-07-28 に修正）。
+        XCTAssertEqual(report.sets.map(\.index), Array(1...exp.distSets.count),
+                       "\(name): セット番号が 1 からの連番でない")
+        XCTAssertEqual(Set(report.laps.map(\.setNumber)),
+                       Set(1...exp.distSets.count), "\(name): ラップのセット番号")
+
+        // 全インターバルで壁カウントとペース推定が一致（min() 不発）していることも
         // Python 側で実証済みの性質としてピン留めする
-        XCTAssertTrue(report.reps.allSatisfy { !$0.crossCheck },
+        XCTAssertTrue(report.intervals.allSatisfy { !$0.crossCheck },
                       "\(name): CROSS-CHECK が発火（検出ずれ）")
 
         // 本ごとメトリクス（ストローク数/SWOLF）も Python と同一値
-        XCTAssertEqual(report.lengths.count, exp.lengthCount, "\(name): lengths")
-        XCTAssertEqual(report.strokedLengths.count, exp.lengthCount,
-                       "\(name): 計測不能本（strokes=0）が出ている")
+        XCTAssertEqual(report.laps.count, exp.lapCount, "\(name): laps")
+        XCTAssertEqual(report.strokedLaps.count, exp.lapCount,
+                       "\(name): 計測不能ラップ（strokes=0）が出ている")
         XCTAssertEqual(report.strokesTotal, exp.strokesTotal, "\(name): strokes total")
-        XCTAssertEqual(report.strokesPerLengthMedian, exp.splMedian,
-                       "\(name): strokes/length median")
+        XCTAssertEqual(report.strokesPerLapMedian, exp.splMedian,
+                       "\(name): strokes/lap median")
         XCTAssertEqual(Int((report.swolfAverage ?? 0).rounded()),
                        exp.swolfAvgRounded, "\(name): swolf avg")
     }
@@ -73,14 +81,14 @@ final class ParityTests: XCTestCase {
     func testSession20260621() throws {
         try runSession("swim_20260621_171349.csv", Expectation(
             turns: 35, rests: 13, bigs: 2, recoveredAt: [724],
-            distHalves: [500, 675], distTotal: 1175,
-            lengthCount: 47, strokesTotal: 647, splMedian: 14, swolfAvgRounded: 44))
+            distSets: [500, 675], distTotal: 1175,
+            lapCount: 47, strokesTotal: 647, splMedian: 14, swolfAvgRounded: 44))
     }
 
     func testSession20260728() throws {
         try runSession("swim_20260728_153415.csv", Expectation(
             turns: 41, rests: 1, bigs: 3, recoveredAt: [533],
-            distHalves: [625, 425], distTotal: 1050,
-            lengthCount: 42, strokesTotal: 576, splMedian: 14, swolfAvgRounded: 44))
+            distSets: [625, 425], distTotal: 1050,
+            lapCount: 42, strokesTotal: 576, splMedian: 14, swolfAvgRounded: 44))
     }
 }

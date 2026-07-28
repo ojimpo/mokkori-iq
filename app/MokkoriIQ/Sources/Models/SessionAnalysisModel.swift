@@ -42,10 +42,10 @@ final class SessionAnalysisModel {
                 let sess = try store.loadSession(meta)
                 let base = WallDetector.detectWalls(sess)
                 let d = overlay.apply(to: base)
-                let rep = SwimReporter.makeReport(sess, detection: d)
+                let interval = SwimReporter.makeReport(sess, detection: d)
                 let rows = WallIntervalTable.rows(for: d)
-                let chart = PaceChart.make(report: rep, detection: d)
-                return (sess, base, d, rep, rows, chart)
+                let chart = PaceChart.make(report: interval, detection: d)
+                return (sess, base, d, interval, rows, chart)
             }.value
             session = r.0
             baseDetection = r.1
@@ -97,7 +97,7 @@ final class SessionAnalysisModel {
 
     /// 泳ぎ始めの絶対時刻（アンカー + 最初のレップ開始）。アンカー未設定なら nil。
     var swimStartDate: Date? {
-        guard let anchor = meta.startEpoch, let first = report?.reps.first else { return nil }
+        guard let anchor = meta.startEpoch, let first = report?.intervals.first else { return nil }
         return anchor.addingTimeInterval(first.span.start)
     }
 
@@ -113,10 +113,10 @@ final class SessionAnalysisModel {
         let overlay = overlay
         let r = await Task.detached(priority: .userInitiated) {
             let d = overlay.apply(to: baseDetection)
-            let rep = SwimReporter.makeReport(session, detection: d)
+            let interval = SwimReporter.makeReport(session, detection: d)
             let rows = WallIntervalTable.rows(for: d)
-            let chart = PaceChart.make(report: rep, detection: d)
-            return (d, rep, rows, chart)
+            let chart = PaceChart.make(report: interval, detection: d)
+            return (d, interval, rows, chart)
         }.value
         detection = r.0
         report = r.1

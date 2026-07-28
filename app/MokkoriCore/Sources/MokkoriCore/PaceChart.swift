@@ -6,16 +6,16 @@ import Foundation
 /// 見た目ではなく解析の話なのでここに置く（＝ Xcode 無しでテストできる）。
 ///
 /// グラフが答えるべき問いは2つだけ:
-///   1. 1000m を通してビルドアップできているか、垂れていくか → 右端の輪郭 + 傾向線
+///   1. 1000m を通してビルドアップできているか、垂れていくか → 右端の輪郭
 ///   2. 異常値が一目で分かるか                                → 強調色 + 直接ラベル
 public struct PaceChart {
 
-    /// 1本 = 1バー。
+    /// 1ラップ = 1バー。
     public struct Row: Identifiable, Equatable {
         public let id: Int             // 通し番号（0-based）
-        public let half: Int
-        public let rep: Int
-        public let num: Int
+        public let setNumber: Int      // 1-based セット番号
+        public let interval: Int       // 1-based インターバル番号
+        public let number: Int         // 1-based インターバル内のラップ番号
         public let span: Span
         public let strokes: Int
         /// バーが占める距離帯 [start, end]（m）。連続軸なので実距離で置く。
@@ -23,9 +23,9 @@ public struct PaceChart {
         public let distanceEnd: Double
         public let duration: Double
         public let pace100: Double     // s /100m
-        /// ブロック中央値から ±25% 外れた本（＝見てほしい本。良し悪しの評価ではない）
+        /// セット中央値から ±25% 外れたラップ（＝見てほしいラップ。良し悪しの評価ではない）
         public let isOutlier: Bool
-        /// 壁インターバル確認画面と同じ疑い（見逃し / 偽壁）。異常値と同じ強調で出す。
+        /// ラップ確認画面と同じ疑い（見逃し / 偽壁）。異常値と同じ強調で出す。
         public let suspect: WallInterval.Flag
 
         public var distanceMid: Double { (distanceStart + distanceEnd) / 2 }
@@ -34,12 +34,12 @@ public struct PaceChart {
         public var isEmphasized: Bool { isOutlier || suspect != .ok }
     }
 
-    /// レップ境界（休憩）。距離軸上の水平ヘアラインとして引く。
+    /// インターバルの境界（レスト）。距離軸上の水平ヘアラインとして引く。
     public struct Boundary: Identifiable, Equatable {
         public let id: Int
         public let distance: Double    // m（この位置に線を引く）
-        public let rest: Double        // s（休憩時間）
-        public let isBlock: Bool       // true = ブロック境界（大休憩）
+        public let rest: Double        // s（レストの長さ）
+        public let isBlock: Bool       // true = セット境界（大休憩）
     }
 
     public let rows: [Row]
@@ -47,7 +47,7 @@ public struct PaceChart {
     public let poolLength: Double
     public let totalMeters: Double
     /// 基準線。レポート上部と食い違わないよう report.pace100 をそのまま使う
-    /// （本ごとの平均を取り直さない）。
+    /// （ラップごとの平均を取り直さない）。
     public let averagePace100: Double
     /// 横軸（s /100m）。0 起点にしない理由と最低幅の根拠は設計ドキュメント参照。
     public let axisLo: Double
@@ -63,15 +63,15 @@ public struct PaceChart {
     /// セッションを通したペースの変化量（s /100m）。正 = 垂れ、負 = ビルドアップ。
     public var trendDelta: Double { trendAtEnd - trendAtStart }
 
-    /// 傾向が「ほぼ一定」と言える範囲（s /100m）。1本あたり数秒の揺れは傾向ではない。
+    /// 傾向が「ほぼ一定」と言える範囲（s /100m）。1ラップ数秒の揺れは傾向ではない。
     public static let flatTrendTolerance = 2.0
     public var isTrendFlat: Bool { abs(trendDelta) < Self.flatTrendTolerance }
 
     // MARK: - 構築
 
-    /// 異常値の判定はブロック中央値の倍率。壁インターバル確認画面の 1.6 / 0.6 とは
-    /// 別の値だが、あちらは「泳ぎギャップ」で壁の有無を疑う基準、こちらは「本のペース」で
-    /// 目を留めさせる基準なので役割が違う（疑いが付いた本は下で必ず強調される）。
+    /// 異常値の判定はセット中央値の倍率。ラップ確認画面の 1.6 / 0.6 とは別の値だが、
+    /// あちらは「泳ぎギャップ」で壁の有無を疑う基準、こちらは「ラップのペース」で
+    /// 目を留めさせる基準なので役割が違う（疑いが付いたラップは下で必ず強調される）。
     static let slowFactor = 1.25
     static let fastFactor = 0.75
     /// 軸の余白と、均一なセッションで拡大しすぎないための最低幅（平均 ± これ）。
@@ -82,27 +82,28 @@ public struct PaceChart {
         let pool = report.poolLength
 
         // 確認画面の疑いフラグを壁の開始時刻で引けるようにする。
-        // 本の span.end は（レップ最終本を除いて）その壁の start と一致する。
+        // ラップの span.end は（インターバル最終ラップを除いて）その壁の start と一致する。
         var suspectByWallStart = [Double: WallInterval.Flag]()
         for r in WallIntervalTable.rows(for: detection) where r.flag != .ok {
             if let w = r.wall { suspectByWallStart[w.start] = r.flag }
         }
 
-        // 異常値の基準はブロック単位（ウォームアップとメインで基準が変わるため）
-        var medianByHalf = [Int: Double]()
-        for half in Set(report.lengths.map(\.half)) {
-            let paces = report.lengths.filter { $0.half == half }
+        // 異常値の基準はセット単位（ウォームアップとメインで基準が変わるため）
+        var medianBySet = [Int: Double]()
+        for setNumber in Set(report.laps.map(\.setNumber)) {
+            let paces = report.laps.filter { $0.setNumber == setNumber }
                 .map { $0.duration / pool * 100 }
-            if !paces.isEmpty { medianByHalf[half] = Stats.median(paces) }
+            if !paces.isEmpty { medianBySet[setNumber] = Stats.median(paces) }
         }
 
         var rows = [Row]()
         var boundaries = [Boundary]()
-        for (i, l) in report.lengths.enumerated() {
+        for (i, l) in report.laps.enumerated() {
             let pace = l.duration / pool * 100
-            let med = medianByHalf[l.half] ?? pace
+            let med = medianBySet[l.setNumber] ?? pace
             let outlier = med > 0 && (pace > slowFactor * med || pace < fastFactor * med)
-            rows.append(Row(id: i, half: l.half, rep: l.rep, num: l.num,
+            rows.append(Row(id: i, setNumber: l.setNumber, interval: l.interval,
+                            number: l.number,
                             span: l.span, strokes: l.strokes,
                             distanceStart: Double(i) * pool,
                             distanceEnd: Double(i + 1) * pool,
@@ -110,13 +111,13 @@ public struct PaceChart {
                             isOutlier: outlier,
                             suspect: suspectByWallStart[l.span.end] ?? .ok))
 
-            if i + 1 < report.lengths.count {
-                let next = report.lengths[i + 1]
-                if next.rep != l.rep || next.half != l.half {
+            if i + 1 < report.laps.count {
+                let next = report.laps[i + 1]
+                if next.interval != l.interval || next.setNumber != l.setNumber {
                     boundaries.append(Boundary(id: boundaries.count,
                                                distance: Double(i + 1) * pool,
                                                rest: next.span.start - l.span.end,
-                                               isBlock: next.half != l.half))
+                                               isBlock: next.setNumber != l.setNumber))
                 }
             }
         }

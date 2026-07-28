@@ -44,19 +44,31 @@ app/MokkoriCore/     解析エンジン（Swift Package, iOS17+/macOS14+）
   SwimSession      flash_dump CSV ローダ（g→m/s²・dps→rad/s、fs 推定）
   RawRecording     生データ int16 コーデック（CSV とビット同値を検証済み）
   WallDetector     turn_stand.py 移植（verticality → 分類 → デフラグ → リズムリカバリ）
-  SwimReport       swim_report.py 移植（距離・ペース・レップ・本ごとメトリクス）
-  StrokeCounter    本ごとストローク数（バンドパス biquad + prone ゲート ゼロクロス）
-  WallOverlay      壁の人手修正（生データ・自動検出とは分離して保存）
-  WallIntervals    確認画面の行データ（見逃し/偽壁ハイライト）
-  PaceChart        ペースグラフのデータ（軸の切り方・異常値・傾向線）
+  SwimReport       swim_report.py 移植（距離・ペース・セット/インターバル/ラップ）
+  StrokeCounter    ラップごとストローク数（バンドパス biquad + prone ゲート ゼロクロス）
+  WallOverlay      ターンの人手修正（生データ・自動検出とは分離して保存）
+  WallIntervals    ラップ確認画面の行データ（見逃し/偽ターンのハイライト）
+  PaceChart        ペースグラフのデータ（軸の切り方・異常値・傾向）
+  MetricStyle      Apple フィットネス流の数値タイポグラフィ（アプリ側）
   StravaSummary    投稿内容の組み立て（Strava 投稿規約の実装）
 
 app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
   SessionStore          永続化 Documents/sessions/<uuid>/{meta.json,raw.bin,overlay.json}
   SessionAnalysisModel  読込→自動検出→オーバーレイ適用→即時再計算
   StravaService         ゲートウェイ（strava.ojimpo.com）へ投稿
-  Views/                一覧 → レポート → 壁インターバル確認 / Strava アップ / 設定
+  Views/                一覧 → レポート → ラップ確認 / Strava アップ / 設定
 ```
+
+## 用語とタイポグラフィ（2026-07-28 に総入れ替え）
+
+「半」「レップ」「本」は自作語だったので、**Garmin 日本語 + 水泳の練習用語**に置き換えた。
+**ラップ**（プールの片道25m）/ **インターバル**（レストで区切られた連続泳ぎ）/ **セット**（大休憩で
+区切られた塊）/ **レスト**。コードの識別子も揃えてある（`report.laps` / `.intervals` / `.sets`）。
+詳細な対応表は CLAUDE.md「用語」。**新しい語以外は使わないこと。**
+
+レポート画面の見た目は **Apple 純正フィットネスの「ワークアウトの詳細」** に倣う
+（`Views/MetricStyle.swift`）。ラベルは小さく控えめ・値は大きく色付き・単位は小さく・行は区切り線。
+メトリクスの種類ごとに色（距離=青 / 時間=橙 / ペース=teal / ストローク=緑 / SWOLF=紫）。
 
 ## 移植で守るべきルール（崩すとパリティテストが割れる）
 
@@ -67,14 +79,15 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
   （`analysis/regression_check.py` と `ParityTests.swift`）。
 
 ピン留めしてある期待値:
-- 6/21: turns 35 / rests 13 / bigs 2 / 復元@724s / 500+675 = **1175m** / 47本 647ストローク
-- 7/28: turns 41 / rests 1 / bigs 3 / 復元@533s / 625+425 = **1050m** / 42本 576ストローク
-- 両セッションとも全レップで CROSS-CHECK 不発（min() が効かない）
+- 6/21: turns 35 / rests 13 / bigs 2 / 復元@724s / 500+675 = **1175m** / 47ラップ 647ストローク
+- 7/28: turns 41 / rests 1 / bigs 3 / 復元@533s / 625+425 = **1050m** / 42ラップ 576ストローク
+- 両セッションとも全インターバルで CROSS-CHECK 不発（min() が効かない）
+- セット番号が 1 からの連番（泳ぎゼロのブロックが番号を食わない）
 
 ## すぐやれる残作業（優先度順）
 
 1. **実機 iPhone で動かす**（無料 Apple ID で可・7日で再署名）。シミュレータ限定の
-   確認しかしていない。**画面の描画・遷移・壁編集の再計算は UI テストで自動確認済み**なので、
+   確認しかしていない。**画面の描画・遷移・ターン編集の再計算は UI テストで自動確認済み**なので、
    実機で見るのは「実際の指の操作感」と「取込の体感速度」。
 2. **Strava に実投稿してみる**。設定画面に API キーを入れるだけで投稿できる状態
    （キー: `ssh arigato-nas 'grep GATEWAY_API_KEY ~/dev/strava-autopilot/.env'`）。
@@ -89,20 +102,20 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
 
 - **SPM（スペクトルのストローク率）のコア移植**。`analysis/stroke_rate.py` の
   `dominant_cadence` は FFT を使うので、そのままでは Swift に持ってきづらい。
-  本ごとストローク数 ÷ 本タイムで代用できるので、そもそも移植が要るか要検討。
+  ラップごとストローク数 ÷ ラップタイムで代用できるので、そもそも移植が要るか要検討。
 - **履歴・集計画面**、**検出器更新時の一括再処理ボタン**、**修正ログの書き出し**
   （＝ラベル付き GT を Python 側チューニングへ還流）は Phase E のまま未着手。
-- 壁インターバル画面の**壁追加はギャップ中点固定**。任意の時刻を指定したくなったら
-  波形を出して指でつまむ UI が要る（現状は「この前のギャップに壁を追加」のみ）。
+- ラップ確認画面の**ターン追加はラップの中点固定**。任意の時刻を指定したくなったら
+  波形を出して指でつまむ UI が要る（現状は「このラップの途中にターンを追加」のみ）。
 
 ## UI テストの仕組み（画面を触る作業を自動化してある）
 
 `app/MokkoriIQ/UITests/ScreenFlowTests.swift` がシミュレータを実際に操作する。
 セッションは `UITEST_SEED_CSV` に `data/swim/*.csv` のパスを渡して取り込ませる
 （`SessionListView` の `.task` に種まきフックがあり、**環境変数があるときだけ**動く）。
-検証しているのは「レポートの主要な数値が出る」「壁インターバル表が出る」
-「壁を1つ消すと距離が 25m 減り、破棄すると戻る」「ゲートウェイ未設定なら投稿ボタンが押せない」
-「ペースグラフが出て、バーをタップすると本の詳細が出る」。
+検証しているのは「レポートの主要な数値が出る」「ラップ表が出る」
+「ターンを1つ消すと距離が 25m 減り、破棄すると戻る」「ゲートウェイ未設定なら投稿ボタンが押せない」
+「ペースグラフが出て、バーをタップするとラップの詳細が出る」。
 
 **目視用のスクリーンショット**も撮れる（グラフのように数値が通っても見た目が壊れうるもの用）。
 `UITEST_SCREENSHOT_DIR` を渡したときだけ書き出す。`xcodebuild` から渡すときは
