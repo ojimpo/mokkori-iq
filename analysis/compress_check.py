@@ -165,5 +165,58 @@ def main():
         print()
 
 
+
+
+def verify_truncation():
+    """下位ビットを落としたデータで**レポートを丸ごと再実行**して、
+    容量がどれだけ減るのと引き換えに解析結果が動くのかを見る。
+    （帯域は一切触っていないので、13Hz 化とは失うものが違う）"""
+    import re
+    import subprocess
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="trunc_")
+    for name in SESSIONS:
+        path = os.path.join(ROOT, "data", "swim", name)
+        if not os.path.exists(path):
+            continue
+        df = pd.read_csv(path)
+        v = raw_int16(path)
+        print(f"=== {name} — 下位ビット切り捨ての実害 ===")
+        print(f"{'切り捨て':<8}{'B/sample':>9}{'記録可能':>8}{'粒度(acc)':>11}"
+              f"{'粒度(gyro)':>11}  {'距離':>6} {'セット':<12}{'ラップ':>5}{'str':>5}{'SWOLF':>6}")
+        base = None
+        for drop in (0, 1, 2, 3, 4):
+            q = (v >> drop) << drop
+            out = df.copy()
+            out[["ax", "ay", "az"]] = q[:, :3] * ACC_SENS
+            out[["gx", "gy", "gz"]] = q[:, 3:] * GYRO_SENS
+            csv = os.path.join(tmp, f"d{drop}_{name}")
+            out.to_csv(csv, index=False, float_format="%.5f")
+
+            txt = subprocess.run(
+                [sys.executable, os.path.join(HERE, "swim_report.py"), csv],
+                capture_output=True, text=True, cwd=ROOT).stdout
+            dist = re.search(r"距離\s+(\d+) m", txt)
+            sets = re.findall(r"^\s+(\d+)\s+(\d+)m\s", txt, re.M)
+            st = re.search(r"合計 (\d+)\s+\((\d+)/(\d+)ラップ", txt)
+            sw = re.search(r"swolf:\s+平均 (\d+)", txt)
+
+            bps = pack_rice(v, 80, drop)
+            row = (int(dist.group(1)) if dist else 0,
+                   [int(b) for _, b in sets],
+                   int(st.group(3)) if st else 0,
+                   int(st.group(1)) if st else 0,
+                   int(sw.group(1)) if sw else 0)
+            if base is None:
+                base = row
+            mark = "" if row == base else "  ← 結果が動く"
+            print(f"{drop:>4}bit {bps:8.2f} {FLASH_BYTES/bps/ODR/60:6.0f}分"
+                  f"{ACC_SENS*1000*(1<<drop):9.2f}mg{GYRO_SENS*(1<<drop):9.2f}dps"
+                  f"  {row[0]:>5}m {str(row[1]):<12}{row[2]:>5}{row[3]:>5}{row[4]:>6}{mark}")
+        print()
+
+
 if __name__ == "__main__":
     main()
+    verify_truncation()
