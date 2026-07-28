@@ -263,6 +263,30 @@ sudo usermod -aG dialout $USER                              # シリアル権限
     検出器を後から改良すれば**過去セッションも再処理して精度を引き上げられる**（今回 6/21 を新検出器で 1150→1175m に
     再集計したのと同じことがアプリ内で起きる）。デバイス上のフラッシュは吸い出し後に消してよい理由もこれ。
 
+### Phase A 実装状況 (2026-07-28 着手。app/ ディレクトリ)
+プランは `docs/phase2_app_plan.md`。**解析コアの Swift 移植とパリティは完了**、アプリはシミュレータでビルド・起動確認済み。
+- **`app/MokkoriCore`** = 解析エンジン Swift Package（turn_stand / swim_report の移植。iOS17+/macOS14+ 両対応）。
+  ```bash
+  cd app/MokkoriCore && swift test   # パリティテスト。Swift検出器に触ったら必ず実行（Mac上でXcode不要）
+  ```
+  regression_check.py と同一期待値（6/21: 35/13/2・復元@724s・1175m、7/28: 41/1/3・復元@533s・1050m）をピン留め。全 PASS。
+  Python 検出器を変えたら **regression_check.py と両方**を回し、期待値がズレたら両者を同時に更新する。
+- **移植の数値パリティ規則（崩すとテストが割れる）**: 全計算 Double / `np.percentile`=linear 補間・`np.median`=偶数長は中央2値平均
+  （Stats.swift）/ Python `round()`=偶数丸め → Swift は `.rounded(.toNearestOrEven)`（ペース推定本数）。
+- **`app/MokkoriIQ`** = iOS アプリ本体（SwiftUI, iOS 17+, iPhone 専用）。`.xcodeproj` は生成物でコミットしない:
+  ```bash
+  brew install xcodegen && cd app/MokkoriIQ && xcodegen    # MokkoriIQ.xcodeproj を生成 → Xcode で開く
+  xcodebuild -project MokkoriIQ.xcodeproj -scheme MokkoriIQ -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+  ```
+- 実装済み: CSV インポート（「ファイル」アプリ経由 fileImporter）→ 永続化は **raw.bin (int16) + meta.json + overlay.json** に分離
+  （`Documents/sessions/<uuid>/`）。int16 化は**CSV 直読みとビット単位同値をテストで担保**（RawRecording。ダメな形式は raw.csv フォールバック）。
+  画面: セッション一覧 → レポート（距離/ペース/半分割/レップ内訳/CROSS-CHECK警告）→ **壁インターバル確認画面**
+  （ハイライト・壁の追加/削除/マージ＝オーバーレイ編集・即時再計算・修正破棄）。
+- 未了: SPM 表示（コア未移植・後回し可）、手動時刻アンカー UI と Strava アップ（Phase B）、実機 iPhone での動作確認。
+- 落とし穴: Xcode 26.6 は **iOS 26.5 シミュレータランタイム必須**（26.4 が残っていても destination が1つも出ず
+  "iOS 26.5 is not installed" になる）。`xcodebuild -downloadPlatform iOS` で導入（2026-07-28 導入済み・26.4 は削除）。
+  CoreSimulator が古い警告が出たら `launchctl remove com.apple.CoreSimulator.CoreSimulatorService` で再起動。
+
 ### 記録時間の延長（将来検討）
 記録可能時間 **約52分**は 2MB QSPI ÷ 12.8 byte/サンプル(6軸int16+ページヘッダ) ÷ 52Hz ≒ 約3150秒 から来る、**デバイス上のバイナリ形式**による制約。
 吸い出し後の CSV 容量（1セッション約9.6MB＝テキスト展開で約5倍に膨張）とは別物で、記録時間を縛るのはあくまでフラッシュ上のバイナリ形式。

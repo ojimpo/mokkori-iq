@@ -126,3 +126,23 @@ Cosense「mokkori-iq 進捗ログ」のミラー。時刻は JST（ツール実�
 - 注意点: ウォームアップ/退水を含む区間は prone ゲート必須（6/21 の先頭150s区間で125カウントのゴミ実例）
 - **docs/phase2_app_plan.md にガーミン互換メトリクスの実装可否マトリクスを追記**: 実装済み=距離/本数/時間/ペース/ストローク率/セット構造、実証済み=本ごとストローク数、容易=SWOLF/DPS/ベストペース、概算=カロリー、不可=心拍系（センサ無し）、保留=泳法判定（自由形のみ運用）
 - Todoist に「swim_report に本ごとメトリクス追加」タスク（p2）を追加。Phase A の Swift 移植より先に Python リファレンスを作る順
+
+### 17:30 Phase A 着手: 解析エンジンの Swift 移植、パリティテスト一発 green
+- `app/MokkoriCore` を Swift Package として作成（iOS 17+ / macOS 14+ 両対応）。**macOS でもビルドできるので `swift test` が Xcode 不要で回る**＝パリティテストを Mac の CLI で高速に回せる構成
+- 移植内容: CSV ローダ（g→m/s²・dps→rad/s 変換＋fs 推定）/ numpy 互換 median・percentile（linear 補間）/ EMA / verticality 自己キャリブレーション / detect_walls（分類→デフラグ union→リズムリカバリ→タップ三連）/ swim_report の距離計算（typical length time・レップ分割・min() 物理制約）
+- **パリティテスト green（一発）**: regression_check.py と同一期待値（6/21: turns35/rests13/bigs2/復元@724s/500+675=1175m、7/28: turns41/rests1/bigs3/復元@533s/625+425=1050m）を XCTest でピン留め、両セッション PASS。全レップで CROSS-CHECK 不発（min() が効かない）も性質としてピン留め
+- 移植の要注意点（ハマり回避の知見）:
+  - `np.percentile` は linear 補間、`np.median` は偶数長で中央2値平均。Swift 側もこの定義に合わせないと閾値（percentile(act,60)・percentile(dev,99)）が微妙にズレて episode 境界が動く
+  - Python の `round()` は**偶数丸め**（banker's rounding）→ ペース推定本数は `.rounded(.toNearestOrEven)` で移植
+  - 全計算 Double。プラン想定どおり
+- **int16 バイナリ永続化（RawRecording）**: CSV↔int16 の完全ラウンドトリップを実装・検証（感度 = accel 8/32768 g/LSB、gyro 70mdps/LSB。CSV 値=round5(raw×感度)、t=round4(i/odr) を利用）。**バイナリ経由でも CSV 直読みとビット単位で同値**＝保存形式の違いで解析結果が変わらないことをテストで担保。9.6MB CSV → 約2MB
+- **編集オーバーレイ（WallOverlay）**: 壁の追加/削除を生データ・自動検出と分離して保存（プランの「修正ログ=ラベル付きGT」の器）。**壁インターバル表（WallIntervalTable）**: ブロック内中央値の ≥1.6倍=見逃し疑い / ≤0.6倍=偽壁疑い / リカバリ壁の明示、をコア側で行計算（テスト可能に）
+
+### 17:45 iOS アプリ本体（app/MokkoriIQ）: 3画面実装、シミュレータでビルド・起動確認
+- XcodeGen 導入（`project.yml` をコミット、`.xcodeproj` は生成物で gitignore）。SwiftUI / iOS 17+ / iPhone 専用 / ローカルパッケージ MokkoriCore 依存
+- **永続化**: `Documents/sessions/<uuid>/` に meta.json（一覧用サマリキャッシュ込み）+ raw.bin（int16）+ overlay.json（人手修正）。量子化ラウンドトリップに失敗する形式は raw.csv フォールバック。時刻アンカー（startEpoch）は Phase B/C 用の器だけ用意
+- **画面**: セッション一覧（fileImporter で CSV インポート・スワイプ削除）→ レポート（距離/ペース/泳ぎ時間/半分割/レップ内訳/CROSS-CHECK 警告）→ **壁インターバル確認画面**（ハイライト・「補完」バッジ・スワイプ/コンテキストメニューで壁の追加/削除（=隣接マージ）→ 即時再計算・修正の全破棄）。編集で一覧サマリも追随更新
+- **環境のハマり（次回のため）**: Xcode 26.6 は iOS 26.5 シミュレータランタイム必須。手元は 26.4 しか無く destination が1つも出ない状態 → ディスク残 11GB だったので使えない 26.4（7.9GB）を削除してから `xcodebuild -downloadPlatform iOS`（8.5GB）で 26.5 導入。CoreSimulator が古い警告は `launchctl remove com.apple.CoreSimulator.CoreSimulatorService` で解消
+- SwiftUI の罠: `Section("タイトル") { } footer: { }` という初期化子は無い → `Section { } header: { } footer: { }` に
+- 検証: iPhone 17 Pro シミュレータでビルド成功・起動・セッション一覧の表示確認（コンテナに 7/28 セッションを直接投入して 1,050m / 20:35.5 の行表示を目視）。画面遷移の操作確認は Xcode から手で行う（osascript の補助アクセス権が無く自動タップ不可）
+- 残: SPM 表示（コア未移植）、手動時刻アンカー UI + Strava（Phase B）、実機 iPhone 確認。CLAUDE.md に Phase A 実装状況とビルドコマンドを追記

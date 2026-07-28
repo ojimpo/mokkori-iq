@@ -1,0 +1,31 @@
+# XcodeGen 定義。.xcodeproj は生成物なのでコミットしない:
+#   brew install xcodegen && cd app/MokkoriIQ && xcodegen
+# で MokkoriIQ.xcodeproj を再生成して Xcode で開く。
+name: MokkoriIQ
+options:
+  bundleIdPrefix: com.ojimpo
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  MokkoriCore:
+    path: ../MokkoriCore
+targets:
+  MokkoriIQ:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: MokkoriCore
+    settings:
+      base:
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        PRODUCT_BUNDLE_IDENTIFIER: com.ojimpo.mokkori-iq
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"          # iPhone 専用
+        SWIFT_VERSION: "5.0"
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_CFBundleDisplayName: mokkori-iq
