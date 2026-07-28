@@ -262,6 +262,21 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   「偽分割で増える方を潰して過大を防ぐ／検証済みの綺麗なレップはそのまま／怪しい連続区間だけ保守的に」が正解。
   壁カウント(turn_stand.py)は偽分割で過大に出やすい→ペースベースの本数推定や偽分割除去で過大を抑える。端数は下に丸める。
 
+## Strava 投稿の規約 (2026-07-28 確定、スマホアプリでも同じ挙動にする)
+**ガーミン等の既製ウォッチで泳いだ場合と同じ見え方にする**のが方針。ユーザー確定事項:
+- **表示時間 = 泳ぎのみ（moving time）**。プールの休憩・ベンチ休憩は含めない（今回 20:35。実経過 33:02 は説明文に併記）。
+  ガーミンのプールスイムがそう出るため。ペースも moving 基準（1:58/100m）。
+- **開始時刻 = 実際に泳ぎ始めた時刻**（ウォッチのスタートボタン相当。今回 13:38:58 JST）。
+- 距離は [メトリクス算出方針] の保守値をそのまま使う（説明文に「実際はこれ以上」と明記）。
+- 現状は Strava の**手動アクティビティ** `POST /api/v3/activities`（`sport_type=Swim` / `start_date_local` /
+  `elapsed_time`=moving / `distance` / `description`）。手動作成では moving=elapsed になるため、実経過との差は説明文で補う。
+  将来レップ別スプリットまで出したくなったら TCX アップロード（Lap に `Intensity=Resting` で休憩を表現）へ移行する。
+- **認証は自作の別アプリ `strava-autopilot` のものを流用**（arigato-nas: `~/dev/strava-autopilot/`）。
+  `.env` に `STRAVA_CLIENT_ID/SECRET`、`data/autopilot.db` の `oauth_tokens` テーブルに `activity:write` 込みのトークン。
+  **アクセストークンが有効なうちは使うだけにしてリフレッシュしない**（refresh するとトークンが回って autopilot 側が壊れうる）。
+  期限切れ時は autopilot 自身にリフレッシュさせるのが安全。
+- 注意: アカウントの既定公開範囲が `everyone`。非公開にしたいセッションは投稿後に Strava 側で変更する。
+
 ## パラメータ変更
 config/default.json を編集して .venv/bin/python src/evaluate.py で再評価。
 チューニング履歴: analysis/tune.py 〜 tune5.py（グリッドサーチ）。
