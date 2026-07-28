@@ -81,7 +81,7 @@ struct StravaUploadView: View {
                     .disabled(uploading || !strava.isConnected)
                 } footer: {
                     if !strava.isConnected {
-                        Text("設定画面で Strava と連携してください")
+                        Text("設定画面でゲートウェイの接続を確認してください")
                     }
                 }
             }

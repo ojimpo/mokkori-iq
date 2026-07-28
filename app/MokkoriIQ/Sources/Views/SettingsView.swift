@@ -1,56 +1,66 @@
 import SwiftUI
 
-/// 設定画面。Strava の API アプリ資格情報（mokkori-iq 専用に登録したもの）を
-/// 入力して連携する。secret を含むので Keychain 保存（UserDefaults には置かない）。
+/// 設定画面。Strava へは自宅の strava-autopilot（= Strava ゲートウェイ）経由で
+/// 投稿するので、ここで設定するのは **ゲートウェイの URL と API キー**だけ。
+/// Strava の client_secret やトークンはスマホには置かない（理由は StravaService）。
 struct SettingsView: View {
     @Environment(StravaService.self) private var strava
-    @State private var clientId = ""
-    @State private var clientSecret = ""
-    @State private var connecting = false
+    @State private var gatewayURL = ""
+    @State private var apiKey = ""
+    @State private var checking = false
     @State private var errorText: String?
 
     var body: some View {
         Form {
             Section {
                 if strava.isConnected {
-                    LabeledContent("連携中", value: strava.athleteName ?? "Strava")
-                    Button("連携を解除", role: .destructive) { strava.disconnect() }
-                } else {
-                    Button {
-                        Task { await connect() }
-                    } label: {
-                        HStack {
-                            if connecting { ProgressView().padding(.trailing, 6) }
-                            Text("Strava と連携")
-                        }
+                    Label("接続確認済み", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                Button {
+                    Task { await verify() }
+                } label: {
+                    HStack {
+                        if checking { ProgressView().padding(.trailing, 6) }
+                        Text("接続を確認")
                     }
-                    .disabled(connecting || clientId.isEmpty || clientSecret.isEmpty)
+                }
+                .disabled(checking || apiKey.isEmpty || gatewayURL.isEmpty)
+                if strava.isConnected {
+                    Button("API キーを消す", role: .destructive) {
+                        strava.disconnect()
+                        apiKey = ""
+                    }
                 }
             } header: {
-                Text("Strava")
+                Text("Strava ゲートウェイ")
             } footer: {
-                Text("投稿は手動アクティビティ（sport_type=Swim）。scope は activity:write のみです")
+                Text("投稿は strava-autopilot 経由で行います（Strava は 1 アカウント 1 API アプリ・サブスク必須のため、トークンを持つのは NAS 側だけにしています）")
             }
 
             Section {
-                TextField("Client ID", text: $clientId)
-                    .keyboardType(.numberPad)
-                    .onChange(of: clientId) { _, v in strava.clientId = v }
-                SecureField("Client Secret", text: $clientSecret)
-                    .onChange(of: clientSecret) { _, v in strava.clientSecret = v }
+                TextField("ゲートウェイ URL", text: $gatewayURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .onChange(of: gatewayURL) { _, v in strava.gatewayURL = v }
+                SecureField("API キー", text: $apiKey)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: apiKey) { _, v in strava.apiKey = v }
             } header: {
-                Text("API アプリ資格情報")
+                Text("接続先")
             } footer: {
-                Text("strava.com/settings/api で登録したアプリの値です。Authorization Callback Domain は `localhost` にしてください（アプリのリダイレクトは \(StravaService.redirectURI)）。Keychain に保存されます")
+                Text("API キーは NAS の `~/dev/strava-autopilot/.env` の `GATEWAY_API_KEY` と同じ値です。Keychain に保存されます")
             }
         }
         .navigationTitle("設定")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
-            clientId = strava.clientId
-            clientSecret = strava.clientSecret
+            gatewayURL = strava.gatewayURL
+            apiKey = strava.apiKey
         }
-        .alert("連携失敗", isPresented: .init(
+        .alert("接続できません", isPresented: .init(
             get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -58,11 +68,11 @@ struct SettingsView: View {
         }
     }
 
-    private func connect() async {
-        connecting = true
-        defer { connecting = false }
+    private func verify() async {
+        checking = true
+        defer { checking = false }
         do {
-            try await strava.connect()
+            try await strava.verify()
         } catch {
             errorText = error.localizedDescription
         }

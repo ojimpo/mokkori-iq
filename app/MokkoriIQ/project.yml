@@ -19,11 +19,8 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
-        # Strava OAuth のコールバック先。ASWebAuthenticationSession 自体は
-        # 登録不要だが、Strava アプリ側から開かれる経路のために登録しておく。
-        CFBundleURLTypes:
-          - CFBundleURLName: com.ojimpo.mokkori-iq
-            CFBundleURLSchemes: [mokkoriiq]
+        # OAuth はアプリ内で行わない（Strava への投稿は NAS のゲートウェイ経由）
+        # ため、カスタム URL スキームの登録は不要。
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         CFBundleDisplayName: mokkori-iq

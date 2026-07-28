@@ -163,3 +163,26 @@ Cosense「mokkori-iq 進捗ログ」のミラー。時刻は JST（ツール実�
 - **投稿内容の組み立ては `MokkoriCore/StravaSummary`**（＝規約の実装をコア側に置いてテスト可能に）: 名前は時間帯デフォルト（朝/お昼/午後/夜のスイム）、elapsed_time=moving（泳ぎのみ）、start_date_local=泳ぎ始め、説明文に実経過・ペース・ストローク/SWOLF・ベスト。「控えめ」等の断り書きは書かない（保守バイアス撤廃済み）
 - Callback Domain は `localhost`（Strava が明示ホワイトリスト）、アプリのリダイレクトは `mokkoriiq://localhost/callback`。project.yml を `info:` ブロックに切り替えて **CFBundleURLTypes を Info.plist に登録**（生成 plist で確認済み）
 - ビルド成功・シミュレータ起動確認。**残りはユーザー作業の API アプリ登録**（サブアカウント作成 → strava.com/settings/api で登録 → client_id/secret をアプリの設定画面に入力）
+- ※この 18:10 の「サブアカウントで新規登録」方針は **18:40 に撤回**（下記）。Strava の課金要件を見落としていた
+
+### 18:40 方針転換: Strava ゲートウェイ（autopilot 経由）へ。API 課金要件の見落としを訂正
+- **ユーザー指摘で調べ直し、前提が誤りと判明**: 「今って API アクセス自体がプレミアムじゃないとできないのでは」→ **そのとおり**。
+  Strava は 2026-06-01 に開発者プログラムを改定し、**Standard Tier の API 利用に Strava サブスクが必須**（既存開発者は 2026-06-30 から。月 $11.99 相当＝通常のサブスク。Extended Access Tier は対象外）。
+  自分が根拠にしていた「サブスクは API アプリ作成の要件ではない」という公式回答は **2023-01 のもので失効**していた。
+  → **無料サブアカウントで API アプリを登録する案は成立しない**（課金するのは普段使いの本アカウントだけにしたい、というユーザーの意向とも噛み合わない）
+- **さらにユーザー指摘「その API キーは health.ojimpo.com でも使い回しているはず」を検証 → 事実だった**:
+  `strava-autopilot/.env` と `health-ojimpo/.env` の `STRAVA_CLIENT_ID/SECRET` はハッシュ一致。
+  加えて両者の DB の Strava トークンの `expires_at` が**秒まで一致**＝**同じトークンをコピーして共有**している状態。
+  Strava のリフレッシュはトークンをローテーションしうるので、両者が独立にリフレッシュすると片方が無効化されうる（既存の潜在的な脆さ。CLAUDE.md に記録）
+- **採用方針: `strava-autopilot` を「Strava ゲートウェイ」に拡張し、アプリはそこ経由で投稿**（＝ユーザーの「autopilot 側を作り替えていいので壊れないように」に沿う形）。
+  トークンを持つのは NAS 側だけ＝**認可を増やさないので系統が枝分かれしない**（壊れようがない）。`client_secret` をスマホに配らなくて済むのも利点
+- **autopilot 側の実装（別リポジトリ、コミット 3f89f72）**: `POST /api/gateway/activities`（手動アクティビティ作成）と `GET /api/gateway/ping`。
+  認証は `X-API-Key`（`.env` の `GATEWAY_API_KEY`、新規生成）。**キー未設定ならエンドポイントごと 503 で無効**にした
+  — このサービスは `strava.ojimpo.com` で**公開されており（/ui も /docs も /api/activities も無認証で 200）**、書き込み系を無認証で生やすのは危険なため
+- **ハマり: Cloudflare が 5xx を自前のエラーページに差し替える**。最初 Strava のバリデーションエラーを 502 で返したら、アプリ側には `error code: 502` しか届かなかった。→ **422 で返す**ようにして詳細が通るようになった
+- **検証（実アクティビティは作らずに）**: キー無し/誤りは 401、正しいキーで ping は 200。
+  POST に故意に不正な `sport_type` を入れると `Strava rejected the activity (400): {"field":"sport_type","code":"invalid"}` が返る
+  ＝**認証・トークン・Strava 到達・エラー伝搬まで通し確認できた**（アクティビティは作成されない）
+- アプリ側: `StravaService` を OAuth 実装からゲートウェイ呼び出しへ全面書き換え、設定画面もゲートウェイ URL + API キー入力に変更。
+  アプリ内 OAuth が無くなったのでカスタム URL スキーム登録も撤去。ビルド成功
+- **ユーザー作業は「アプリの設定画面に API キーを入れる」だけになった**（Strava 側の新規登録は不要）

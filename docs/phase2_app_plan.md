@@ -43,13 +43,11 @@ Strava へアップ、まで iPhone だけで完結させる（タブレット�
 6. 取込は当面「ファイル」アプリ/AirDrop 経由の CSV インポート（flash_dump の CSV がそのまま入る）。
 
 ### Phase B: Strava アップロード（2026-07-28 実装済み。残りは API アプリ登録＝ユーザー作業）
-1. OAuth: **mokkori-iq 専用の API アプリを新規登録する**方針に決定（詳細と理由は CLAUDE.md
-   「Strava 投稿の規約」の認証節）。Strava は 1 アカウント 1 アプリなので、**登録用のサブアカウント**で
-   アプリを作り、**認可は本アカウント**で行う（投稿先は本アカウント）。
-   Callback Domain = `localhost` / アプリのリダイレクト = `mokkoriiq://localhost/callback`。
-   scope は `activity:write` のみ。client_id/secret とトークンは Keychain 保存。
-   実装: `StravaService`（ASWebAuthenticationSession + web の `oauth/authorize`。
-   `oauth/mobile/authorize` は app-to-app でセッション外にコールバックが戻り取りこぼすので使わない）。
+1. OAuth: **アプリは Strava を直接叩かず、`strava-autopilot` を Strava ゲートウェイにして経由する**方針に決定
+   （詳細と理由は CLAUDE.md「Strava 投稿の規約」の認証節）。Strava は 1 アカウント 1 アプリ、かつ
+   **2026-06 以降は API 利用に Strava サブスクが必須**なので、無料サブアカウントでの新規登録は不可。
+   トークンを持つのを NAS 側だけにすることで、既存の autopilot を壊さず `client_secret` もスマホに置かずに済む。
+   実装: `StravaService`（`POST /api/gateway/activities` を `X-API-Key` で呼ぶだけ）。
 2. 確認画面 →「アップ」で手動アクティビティ POST（規約どおり: moving time / 泳ぎ始め開始 /
    名前は時間帯デフォルト）。アップ済みフラグと activity id をセッションに保存。
    投稿内容の組み立ては `MokkoriCore/StravaSummary`（Swift 側が規約の実装）。
