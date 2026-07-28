@@ -1,4 +1,13 @@
-"""Wall / turn / rest detector via body-axis orientation (gravity on z).
+"""Wall / turn / rest detector via body-axis orientation (gravity).
+
+Orientation-independent since 2026-07-28: the device can be tossed into the
+suit in any orientation. `verticality()` self-calibrates per session (swim
+posture from high-gyro samples, stand posture from short repeated vertical
+episodes) and projects gravity onto the swim->stand axis, mapped to the
+canonical gz scale of the first session (swim ~ -7.5, stand ~ +9.5).
+Known trade-off: 3-tap blips tend to merge into the surrounding stand episode
+on the projected signal (tap recovery on 2026-06-21 is lost; move taps to the
+jerk domain within stands if they are needed again).
 
 Tuned to how this swimmer actually swims a citizen pool (no phone GT available):
   - OPEN turns, no flip: at each wall he plants his feet on the bottom and
@@ -68,13 +77,70 @@ def episodes(mask, t, sig, min_dur):
     return out
 
 
+def _index_runs(mask):
+    """Contiguous True runs as (i, j) index pairs (j exclusive)."""
+    out = []
+    i, n = 0, len(mask)
+    while i < n:
+        if mask[i]:
+            j = i
+            while j < n and mask[j]:
+                j += 1
+            out.append((i, j))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def verticality(sess, tau=1.0):
+    """Orientation-independent 'torso vertical' signal, mapped onto the
+    canonical gz scale of the 2026-06-21 session (swim ~ -7.5, stand ~ +9.5)
+    so downstream thresholds keep their meaning regardless of how the device
+    was tossed into the suit.
+
+    Calibration (self-contained, per session):
+      1. g_swim  = median low-passed gravity over high-gyro-activity samples
+                   (swimming dominates rotation activity).
+      2. Candidate verticals = episodes where |g - g_swim| exceeds ~55% of the
+         session's robust max deviation.
+      3. g_stand = median gravity at the peaks of the SHORT repeated candidates
+                   (1.2-7 s = open-turn wall stands). Anchoring on these, not on
+                   the global max posture, matters: bench sitting deviates MORE
+                   than standing but in a different direction, and projecting on
+                   the sit axis would bury the wall stands.
+      4. Signal  = (g - g_swim) . unit(g_stand - g_swim), affinely mapped so
+                   swim -> -7.5 and g_stand -> +9.5.
+    """
+    t, acc, gyro, fs = sess["t"], sess["acc"], sess["gyro"], sess["fs"]
+    g = np.column_stack([ema(acc[:, i], fs, tau) for i in range(3)])
+    act = ema(np.linalg.norm(gyro, axis=1), fs, 2.0)
+    g_swim = np.median(g[act > np.percentile(act, 60)], axis=0)
+
+    dev = np.linalg.norm(g - g_swim, axis=1)
+    ref = np.percentile(dev, 99.0)
+    runs = _index_runs(dev > 0.55 * ref)
+    peaks = [i + int(np.argmax(dev[i:j])) for i, j in runs]
+    short = [p for (i, j), p in zip(runs, peaks)
+             if 1.2 <= t[j - 1] - t[i] <= 7.0]
+    anchor = short if len(short) >= 3 else peaks   # fallback: few/no wall stands
+    if not anchor:                                 # degenerate: never stood up
+        return ema(acc[:, 2], fs, tau)
+    g_stand = np.median(g[anchor], axis=0)
+
+    u = g_stand - g_swim
+    scale = float(np.linalg.norm(u))
+    v = (g - g_swim) @ (u / scale)
+    return -7.5 + v * (17.0 / scale)
+
+
 def detect_walls(sess, thr=2.0, vthr=5.0, refractory=12.0, tau=1.0):
-    """Detect walls/turns/rests from body-axis gravity (gz). Shared by the
+    """Detect walls/turns/rests from body-verticality gravity. Shared by the
     report tool. Returns a dict of episode lists (each item is (start, end)),
     plus block start/end times. turns keep their full (start, end) span.
     """
-    t, acc, fs = sess["t"], sess["acc"], sess["fs"]
-    gz = ema(acc[:, 2], fs, tau)                  # gravity on body-long axis
+    t = sess["t"]
+    gz = verticality(sess, tau)       # gravity on body-long axis (auto-oriented)
     eps = episodes(gz > thr, t, gz, 0.8)
 
     # classify; a real plant/stand must reach clearly vertical (peak gz > vthr),
