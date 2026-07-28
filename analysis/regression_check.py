@@ -30,17 +30,19 @@ from turn_stand import detect_walls  # noqa: E402
 #                       account (notes.md). 6/21 half1=500m matches the
 #                       intended warmup+100x4; 7/28 half1=625m matches his
 #                       own felt count exactly.
-#   turns/rests/bigs  : verified detection structure (verticality signal,
-#                       2026-07-28 detector).
+#   turns/rests/bigs  : verified detection structure (verticality signal +
+#                       stand de-fragmentation, 2026-07-28 detector).
 #   recovered_at      : rhythm-recovered walls (one shallow/quick stand per
 #                       session, both cross-checked against the time grid).
+#   7/28 total 1050 m is EXACT, not conservative: the swimmer confirmed it
+#   (planned 1000 m plus an extra 50 m at the end).
 EXPECT = {
     "swim_20260621_171349.csv": dict(
-        turns=37, rests=13, bigs=2, recovered_at=[724],
+        turns=35, rests=13, bigs=2, recovered_at=[724],
         dist_halves=[500, 675], dist_total=1175,
     ),
     "swim_20260728_153415.csv": dict(
-        turns=41, rests=3, bigs=3, recovered_at=[533],
+        turns=41, rests=1, bigs=3, recovered_at=[533],
         dist_halves=[625, 425], dist_total=1050,
     ),
 }

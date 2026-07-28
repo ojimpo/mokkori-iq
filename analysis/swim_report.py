@@ -5,18 +5,19 @@ This is the "device output": point it at a pulled session and it prints
 everything you'd log. Detection reuses the gz body-axis wall detector
 (turn_stand.detect_walls) and the gyro-roll cadence (stroke_rate).
 
-Conservative-bias policy (see CLAUDE.md): distance may read low, never high;
-pace may read slow, never fast. Implemented per rep as
+Accuracy first, no deliberate low bias (policy retired 2026-07-28 -- distance
+now feeds a planned haptic "every N m" buzz, where a biased count drifts and
+buzzes at the wrong wall). Each rep is measured two independent ways and they
+have to agree:
 
     lengths = min(wall_count, round(swim_time / typical_length_time))
 
-- wall_count over-reads on false splits (two walls too close); the pace term
-  caps it.
-- a missed wall makes wall_count read low; min() keeps that low value -> an
-  under-count, which is the allowed direction.
-- clean reps agree on both terms, so they stay exact (a verified 100 m stays
-  100 m -- plain floor would wrongly shave it).
-Distance is therefore biased low; pace = moving_time / distance is biased slow.
+min() here is a physical constraint, not a bias: you cannot have swum more
+lengths than the swim time allows. Across both captured sessions (24 reps) the
+two terms agree on every rep, so min() never actually binds -- when it does, it
+means detection is off and the report says so out loud (CROSS-CHECK line).
+The one case that used to bind (6/21 @2251s) was a fragmented stand and is now
+fixed at the source in turn_stand.detect_walls.
 
 Usage:
     python analysis/swim_report.py data/swim/swim_YYYYMMDD_HHMMSS.csv
@@ -108,6 +109,7 @@ def main():
     total_swim = 0.0
     half_rows = []
     rep_lines = []
+    warnings = []
     for hi, (bs, be) in enumerate(halves):
         hl, hs = 0, 0.0
         for ri, (s0, s1) in enumerate(swim_segments(bs, be, d["rests"])):
@@ -117,13 +119,18 @@ def main():
                 continue
             wall_len = sum(1 for a, _ in d["turns"] if s0 <= a <= s1) + 1
             pace_len = int(round(st / Lt))
-            n = max(1, min(wall_len, pace_len))   # <-- conservative rule
+            n = max(1, min(wall_len, pace_len))   # physical cap, see docstring
             hl += n
             hs += st
+            if wall_len != pace_len:
+                warnings.append(
+                    f"   CROSS-CHECK 半{hi+1} レップ{ri+1} ({s0:.0f}-{s1:.0f}s): "
+                    f"壁カウント{wall_len}本 vs ペース推定{pace_len}本 -> {n}本を採用。"
+                    f"検出がずれている可能性（1本={st/max(wall_len,1):.1f}s）")
             rep_lines.append(
                 f"   半{hi+1} レップ{ri+1}: 泳ぎ {fmt(st):>6}  "
                 f"-> {n}本 ({n*int(pool)}m)"
-                + (f"   [壁{wall_len}/ペース{pace_len} -> min]" if args.verbose else ""))
+                + (f"   [壁{wall_len}/ペース{pace_len}]" if args.verbose else ""))
         if hl:
             pace = hs / (hl * pool) * 100
             half_rows.append((hi + 1, hl * pool, hs, pace))
@@ -137,8 +144,11 @@ def main():
 
     print(f"=== swim report: {os.path.basename(args.csv)} ===")
     print(f"typical length time: {Lt:.1f}s/{int(pool)}m  (pool {int(pool)}m, "
-          f"fs {fs:.1f}Hz, conservative)")
+          f"fs {fs:.1f}Hz)")
     print("\n".join(rep_lines))
+    if warnings:
+        print()
+        print("\n".join(warnings))
     print("\n  half      dist   moving   pace/100m")
     for h, hd, hsw, hp in half_rows:
         print(f"   {h:>2}   {int(hd):>5}m  {fmt(hsw):>6}   {fmt(hp)}")
@@ -146,8 +156,8 @@ def main():
     print("\n" + "-" * 42)
     hdr = f"\U0001F4C5 {args.date}  " if args.date else ""
     print(f"{hdr}プールスイム（自由形・{int(pool)}mプール）")
-    print(f"  距離        {int(dist):>5} m   （控えめ。実際はこれ以上）")
-    print(f"  ペース       約{fmt(avg_pace)} /100m   （遅め寄りの安全値）")
+    print(f"  距離        {int(dist):>5} m")
+    print(f"  ペース       約{fmt(avg_pace)} /100m")
     print(f"  泳ぎ時間     {fmt(total_swim)}（moving time）")
     print(f"  総経過時間   {fmt(elapsed)}（休憩込み）")
     if cad:

@@ -158,16 +158,23 @@ def detect_walls(sess, thr=2.0, vthr=5.0, refractory=12.0, tau=1.0):
             turns_e.append((a, b))
         # else: dropped (short + not clearly vertical = bob/noise)
 
-    # refractory: drop a turn within `refractory` s of the previous kept wall
-    order = sorted([(a, b, 'turn') for a, b in turns_e] +
-                   [(a, b, 'rest') for a, b in rests] +
-                   [(a, b, 'big') for a, b in bigs])
-    kept, last = [], -1e9
-    for a, b, kind in order:
-        if kind != 'turn' or (a - last) >= refractory:
-            kept.append((a, b, kind))
-            last = a
-    turns = [(a, b) for a, b, k in kept if k == 'turn']
+    # De-fragment: a single wall arrival splits into two episodes when the
+    # verticality dips briefly under thr mid-stand (6/21 @2251+2259, 4 s apart;
+    # 7/28 @2430+2471, 0.8 s apart). Two *real* walls are always at least one
+    # length-time apart, so anything closer than `refractory` is the same wall
+    # and gets unioned. Measured gaps are bimodal with a wide empty band --
+    # fragments 0.8-8.4 s, next genuine gap 14.4 s -- so 12 s sits in the gap.
+    # Union (not drop, as the old refractory did) also keeps the stand's true
+    # end time, which the report uses to bound swim spans.
+    merged = []
+    for a, b in sorted(turns_e + rests + bigs):
+        if merged and a - merged[-1][1] < refractory:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    turns, rests, bigs = [], [], []
+    for a, b in merged:                       # reclassify by the merged span
+        (bigs if b - a >= 90.0 else rests if b - a >= 7.0 else turns).append((a, b))
 
     # rhythm recovery: walls are near-equidistant within a block. A swim gap
     # (end of one stand -> start of the next, standing time excluded) of ~2x
