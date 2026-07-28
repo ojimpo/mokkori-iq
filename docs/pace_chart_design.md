@@ -1,4 +1,8 @@
-# ペースグラフ設計 (2026-07-28 策定 / 実装は次セッション)
+# ペースグラフ設計 (2026-07-28 策定・同日実装済み)
+
+> **実装済み。** データモデルは `app/MokkoriCore/Sources/MokkoriCore/PaceChart.swift`、
+> 描画は `app/MokkoriIQ/Sources/Views/PaceChartView.swift`。
+> 設計どおりに作れなかった／作ってみて分かったことは末尾の「実装で分かったこと」に追記してある。
 
 レポート画面に「本ごとのペース」を可視化するグラフを入れる。
 実装対象は `app/MokkoriIQ`（SwiftUI + Swift Charts）。データ源は `SwimReport.lengths`。
@@ -184,10 +188,59 @@ let avg = report.pace100
 - 高さは `.frame(height: Double(lengths.count) * 12)` を `ScrollView` に入れる。
   **軸ラベルの帯を含めた高さ**にする（プロットだけの高さにすると軸が切れて内側スクロールが出る）。
 
-## 実装後の確認
+## 実装で分かったこと (2026-07-28)
 
-- UI テスト（`ScreenFlowTests`）に「グラフが出ること」「平均線があること」を足す。
-- ダークモードでも見えることを確認する（シミュレータの外観切り替え）。
-- **バーの太さがセッションをまたいで同じ**であること（1000m 超で潰れていないこと）。
-- 6/21・7/28 の両方を開いて、**輪郭線から傾向が読めるか**を目で確かめる
-  （読めなければ軸の切り方を調整する。ここは数字ではなく見た目で判断してよい）。
+### 異常値の強調は、実データでは一度も発火しない
+
+**この泳者のペースが揃いすぎている。** ブロック中央値に対する比は
+6/21 が 0.87〜1.17、7/28 が 0.84〜1.12 で、判定値 1.25 / 0.75 に**どちらもかすりもしない**。
+つまり橙のバーと直接ラベルは、現状の2セッションでは1本も出ない。
+
+閾値は**緩めずに据え置いた**。理由は、この強調は「速い遅い」を評価するものではなく
+**検出がずれた／本当に泳ぎが崩れた**ときに目を留めさせる非常口だから。
+1.15 倍まで下げれば 6/21 で1本光るが、それは「たまたま少し遅い1本」であって
+見てほしいものではない（ラベルが増えるぶん、本当の異常が埋もれる）。
+実データで通らない経路になるので、**色が付く経路は合成データのテストで担保**してある
+（`PaceChartTests.testOutlierEmphasis`）。
+
+### 傾向線・軸
+
+- 傾向線は回帰直線を**グラフの上端(0m)〜下端(総距離)まで**引く（本の中点の範囲ではなく）。
+  テストの期待値もこの前提（中点間 +18s → 端まで引くと +20s）。
+- 実測の傾向は 6/21 が **+5.9s/100m**、7/28 が **+13.2s/100m**。どちらも「垂れ」。
+  7/28 はブロック境界（10分のベンチ休憩）でペースが一度戻るが、
+  各ブロックの中でも垂れているので、セッション全体の回帰で言い切って問題なかった。
+- 軸幅は 6/21 が 1:43〜2:22、7/28 が 1:41〜2:18。**輪郭の傾きは実際に目で読める**
+  （設計時の計算どおり。0 起点にしていたら読めなかった）。
+
+### Swift Charts の実際
+
+- **角丸を右端だけに付ける方法が無い**（`RectangleMark.cornerRadius` は4隅すべて）。
+  → 同色の四角を左端に 4pt ぶん重ねて左の角丸を潰している。4pt をデータ単位に直すため
+  `GeometryReader` でプロット幅を取る。左端が直線に揃うことがこのグラフの読み方の要なので、
+  ここは妥協しなかった。
+- **休憩ラベルは `position: .trailing` だとカード右端で切れる**（`10:32 休憩` が `1C` になった）。
+  → プロットの内側（`position: .top, alignment: .trailing` + `overflowResolution`）に置く。
+- `RectangleMark` を `BarMark` の代わりに使うのは設計どおりで正しかった（連続軸での自動ビン分割を回避）。
+- グラフは `List` の1行として置いた。設計時は `ScrollView` を想定していたが、
+  ページ全体のスクロールに乗るほうが入れ子スクロールにならない。
+
+## 実装後の確認（済み）
+
+- UI テスト `ScreenFlowTests.testPaceChartAppears`: グラフが出る・傾向の一行が出る・
+  **バーをタップすると本の詳細が出る**。
+- `ScreenFlowTests.testPaceChartSnapshots`: 目視用のスクリーンショットを書き出す。
+  `UITEST_SCREENSHOT_DIR` を渡したときだけ動く（`xcodebuild` からは `TEST_RUNNER_` を
+  前置しないとシミュレータ内のテストランナーに環境変数が届かない）。
+
+  ```bash
+  xcrun simctl ui booted appearance dark   # ダークで見るとき
+  TEST_RUNNER_UITEST_SCREENSHOT_DIR=$PWD/.shots TEST_RUNNER_UITEST_SCREENSHOT_TAG=dark \
+    xcodebuild -project app/MokkoriIQ/MokkoriIQ.xcodeproj -scheme MokkoriIQ \
+    -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+    -only-testing:MokkoriIQUITests/ScreenFlowTests/testPaceChartSnapshots test
+  ```
+
+  ※ 書き出し先は **`/Users/...` 配下**にすること。`/tmp` はシミュレータ内の tmp に落ちてホストに出てこない。
+- ライト・ダーク両方で目視確認済み。バーの太さは 12pt 固定でセッション間で同じ。
+- 6/21（47本・1175m）・7/28（42本・1050m）とも輪郭から傾向が読める。

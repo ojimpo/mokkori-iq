@@ -17,6 +17,7 @@ final class SessionAnalysisModel {
     private(set) var detection: WallDetection?
     private(set) var report: SwimReport?
     private(set) var intervals: [WallInterval] = []
+    private(set) var paceChart: PaceChart?
     private(set) var loading = false
     private(set) var error: String?
 
@@ -43,13 +44,15 @@ final class SessionAnalysisModel {
                 let d = overlay.apply(to: base)
                 let rep = SwimReporter.makeReport(sess, detection: d)
                 let rows = WallIntervalTable.rows(for: d)
-                return (sess, base, d, rep, rows)
+                let chart = PaceChart.make(report: rep, detection: d)
+                return (sess, base, d, rep, rows, chart)
             }.value
             session = r.0
             baseDetection = r.1
             detection = r.2
             report = r.3
             intervals = r.4
+            paceChart = r.5
         } catch {
             self.error = error.localizedDescription
         }
@@ -112,11 +115,13 @@ final class SessionAnalysisModel {
             let d = overlay.apply(to: baseDetection)
             let rep = SwimReporter.makeReport(session, detection: d)
             let rows = WallIntervalTable.rows(for: d)
-            return (d, rep, rows)
+            let chart = PaceChart.make(report: rep, detection: d)
+            return (d, rep, rows, chart)
         }.value
         detection = r.0
         report = r.1
         intervals = r.2
+        paceChart = r.3
         // 一覧のサマリも編集後の値へ追随させる
         meta.distance = r.1.distance
         meta.movingTime = r.1.movingTime

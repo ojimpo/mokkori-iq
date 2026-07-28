@@ -62,6 +62,14 @@ struct SessionDetailView: View {
                         "Strava アップ前にここで検出結果を確認します")
             }
 
+            if let chart = model.paceChart, chart.rows.count >= 2 {
+                Section("ペースの推移") {
+                    PaceChartView(chart: chart)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12,
+                                                  bottom: 12, trailing: 12))
+                }
+            }
+
             Section("半分割") {
                 ForEach(report.halves, id: \.index) { h in
                     HStack {

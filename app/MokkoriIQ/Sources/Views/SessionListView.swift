@@ -57,8 +57,12 @@ struct SessionListView: View {
             .task {
                 // UI テスト用の種まき。環境変数で CSV のパスを渡されたときだけ動く
                 // （テストのたびに「ファイル」アプリを人手で操作しなくて済む）。
-                guard store.sessions.isEmpty,
-                      let path = ProcessInfo.processInfo.environment["UITEST_SEED_CSV"]
+                // 取込済みかどうかはファイル名で見る（アプリのデータはテスト間で
+                // 残るので、別のセッションを続けて渡せるようにしておく）。
+                guard let path = ProcessInfo.processInfo.environment["UITEST_SEED_CSV"],
+                      !store.sessions.contains(where: {
+                          $0.sourceFilename == URL(fileURLWithPath: path).lastPathComponent
+                      })
                 else { return }
                 importing = true
                 _ = try? await store.importCSV(from: URL(fileURLWithPath: path))

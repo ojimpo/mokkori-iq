@@ -283,6 +283,14 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   （`Documents/sessions/<uuid>/`）。int16 化は**CSV 直読みとビット単位同値をテストで担保**（RawRecording。ダメな形式は raw.csv フォールバック）。
   画面: セッション一覧 → レポート（距離/ペース/半分割/レップ内訳/CROSS-CHECK警告）→ **壁インターバル確認画面**
   （ハイライト・壁の追加/削除/マージ＝オーバーレイ編集・即時再計算・修正破棄）。
+- **ペースグラフ実装済み (2026-07-28)**: レポート画面の「ペースの推移」。データは `MokkoriCore/PaceChart`、
+  描画は `MokkoriIQ/Views/PaceChartView`（Swift Charts）。縦軸=距離（上0m→下）・1本25m=1バーの**左端揃え**で、
+  右端の輪郭がペースの推移になる。平均線・回帰の傾向線・レップ/ブロック境界を重ね、下に
+  `後半にかけて +5.9s/100m（垂れ）` と言葉でも言い切る。バーをタップで本の詳細。
+  設計と実装で分かったことは `docs/pace_chart_design.md`。
+  **異常値の強調（橙）は実データ2セッションでは1本も出ない**（ペースが揃っており、ブロック中央値比が
+  最大 1.17 で判定値 1.25 に届かない）。閾値は緩めず据え置き＝「検出がずれた／泳ぎが崩れた」ときの
+  非常口という位置づけ。色が付く経路は合成データのテスト（`PaceChartTests.testOutlierEmphasis`）で担保。
 - **本ごとメトリクス実装済み (2026-07-28)**: swim_report.py と MokkoriCore の両方に ストローク数/SWOLF/DPS/ベストペース
   （RBJ バンドパス biquad + prone ゲート付きヒステリシスゼロクロス。FFT 不使用で Swift と同一算術）。中央値 14/本・SWOLF 平均44。
   期待値は regression_check.py と ParityTests の両方にピン留め済み（変更時は3点同時更新: Python実装/Swift実装/両テスト）。
@@ -291,6 +299,9 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   **アプリは Strava を直接叩かず `strava-autopilot` のゲートウェイ経由**（理由は下記の認証節）。
   投稿内容の組み立ては `MokkoriCore/StravaSummary`（規約の実装。名前は時間帯デフォルト、
   説明文に実経過・ペース・ストローク・SWOLF・ベスト）。
+- **UI テスト (`app/MokkoriIQ/UITests/ScreenFlowTests.swift`)**: シミュレータを実際に操作する。UI を触ったら必ず実行。
+  `UITEST_SCREENSHOT_DIR` を渡すと目視用スクリーンショットも書き出す（`xcodebuild` からは **`TEST_RUNNER_` 前置**が必要。
+  出力先は `/Users/...` 配下にすること＝`/tmp` はシミュレータ内に落ちてホストに出てこない）。
 - 未了: SPM 表示（スペクトル cadence はコア未移植・後回し可。本ごとストローク数から導出可能）、
   実機 iPhone での動作確認、**実アクティビティの投稿テスト**（疎通と Strava 到達までは検証済み）。
 - 落とし穴: Xcode 26.6 は **iOS 26.5 シミュレータランタイム必須**（26.4 が残っていても destination が1つも出ず

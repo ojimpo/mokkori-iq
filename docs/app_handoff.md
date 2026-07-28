@@ -48,6 +48,7 @@ app/MokkoriCore/     解析エンジン（Swift Package, iOS17+/macOS14+）
   StrokeCounter    本ごとストローク数（バンドパス biquad + prone ゲート ゼロクロス）
   WallOverlay      壁の人手修正（生データ・自動検出とは分離して保存）
   WallIntervals    確認画面の行データ（見逃し/偽壁ハイライト）
+  PaceChart        ペースグラフのデータ（軸の切り方・異常値・傾向線）
   StravaSummary    投稿内容の組み立て（Strava 投稿規約の実装）
 
 app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
@@ -82,11 +83,7 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
 3. **CSV インポートの実地確認**。UI テストは環境変数 `UITEST_SEED_CSV` でパスを渡して
    取り込ませている（アプリ側に種まきフックあり）。「ファイル」アプリを人が操作する
    `fileImporter` 経路だけは未実行。
-4. **レポート画面にペースグラフを入れる**（設計済み・未実装）。
-   仕様は `docs/pace_chart_design.md`。縦軸=距離（上 0m → 下 1000m）・1本25mを1バー・
-   **左端揃え**（右端の輪郭でビルドアップ／垂れを読む）・平均線と傾向線を重ねる・異常値だけ強調。
-   配色はバリデータ検証済みの値が書いてある。
-5. Phase C（ファーム時刻アンカー + `TIMES`）。これが入ると手動アンカー入力が不要になる。
+4. Phase C（ファーム時刻アンカー + `TIMES`）。これが入ると手動アンカー入力が不要になる。
 
 ## 手を付けていない設計判断
 
@@ -104,7 +101,21 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
 セッションは `UITEST_SEED_CSV` に `data/swim/*.csv` のパスを渡して取り込ませる
 （`SessionListView` の `.task` に種まきフックがあり、**環境変数があるときだけ**動く）。
 検証しているのは「レポートの主要な数値が出る」「壁インターバル表が出る」
-「壁を1つ消すと距離が 25m 減り、破棄すると戻る」「ゲートウェイ未設定なら投稿ボタンが押せない」。
+「壁を1つ消すと距離が 25m 減り、破棄すると戻る」「ゲートウェイ未設定なら投稿ボタンが押せない」
+「ペースグラフが出て、バーをタップすると本の詳細が出る」。
+
+**目視用のスクリーンショット**も撮れる（グラフのように数値が通っても見た目が壊れうるもの用）。
+`UITEST_SCREENSHOT_DIR` を渡したときだけ書き出す。`xcodebuild` から渡すときは
+**`TEST_RUNNER_` を前置**しないとシミュレータ内のテストランナーに届かない。
+書き出し先は **`/Users/...` 配下**にすること（`/tmp` はシミュレータ内の tmp に落ちてホストに出てこない）。
+
+```bash
+TEST_RUNNER_UITEST_SCREENSHOT_DIR=$PWD/.shots TEST_RUNNER_UITEST_SCREENSHOT_TAG=light \
+  xcodebuild -project app/MokkoriIQ/MokkoriIQ.xcodeproj -scheme MokkoriIQ \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -only-testing:MokkoriIQUITests/ScreenFlowTests/testPaceChartSnapshots test
+xcrun simctl ui booted appearance dark    # ダークで撮り直すとき
+```
 
 ## 落とし穴メモ
 

@@ -5,3 +5,6 @@ __pycache__/
 data/brunner/
 *.egg-info/
 .DS_Store
+
+# 目視確認用スクリーンショット (UITEST_SCREENSHOT_DIR の出力先)
+.shots/
