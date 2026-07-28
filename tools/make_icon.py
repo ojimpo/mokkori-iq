@@ -65,26 +65,31 @@ def stroke_arc(d, cx, cy, r, a0, a1, w):
 
 
 def serpentine(img: Image.Image, lanes: int, start_down: bool, width_frac: float,
-               left=0.28, right=0.72, top=0.24, bot=0.76) -> None:
+               left=0.28, right=0.72, top=0.24, bot=0.76, end_gap=0.0) -> None:
     """往復コース: レーンを泳いで壁でUターン、を lanes 本ぶん。
     `start_down=True` なら左上から下り始める。レーン数と向きで見え方が変わる:
-      3本・下り始め = S 字 / 4本・上り始め = M 字（上に山が2つ）。"""
+      3本・下り始め = S 字 / 4本・上り始め = M 字（上に山が2つ）。
+
+    `end_gap` は**両端の縦線を壁から浮かせる量**（N に対する比）。
+    M 字だと外側の2本の脚が下のベースラインから離れて、真ん中の弧だけが底に届く。
+    ターンの弧は壁に触れたままなので「壁を蹴る/触る」の意味は保たれる。"""
     d = ImageDraw.Draw(img)
     w = int(N * width_frac)
     step = (right - left) / (lanes - 1)
     xs = [N * (left + step * i) for i in range(lanes)]
     top, bot = N * top, N * bot
     r = step * N / 2
+    gap = N * end_gap
 
     going_down = start_down
     for i in range(lanes):
         # レーンの縦線。`going_down` はこのレーンを進む向き。
         # 端のレーンだけ壁まで伸ばし、途中のレーンは両端をターンの弧に譲る。
         if i == 0:
-            y0, y1 = (top, bot - r) if going_down else (bot, top + r)
+            y0, y1 = (top + gap, bot - r) if going_down else (bot - gap, top + r)
         elif i == lanes - 1:
             # 弧から入ってくるので、入口は向きと逆側の壁ぎわ
-            y0, y1 = (top + r, bot) if going_down else (bot - r, top)
+            y0, y1 = (top + r, bot - gap) if going_down else (bot - r, top + gap)
         else:
             y0, y1 = (top + r, bot - r) if going_down else (bot - r, top + r)
         stroke_line(d, xs[i], y0, xs[i], y1, w)
@@ -102,10 +107,14 @@ def draw_lanes(img: Image.Image) -> None:
     serpentine(img, lanes=3, start_down=True, width_frac=0.115)
 
 
+END_GAP = 0.07          # M の外側2本の脚を下のベースラインから浮かせる量
+
+
 def draw_lanes4m(img: Image.Image) -> None:
-    """4本・上り始め = 上に山が2つ出て M に見える形。"""
+    """4本・上り始め = 上に山が2つ出て M に見える形。
+    外側の脚は下の壁から少し浮かせる（真ん中の弧だけが底に届く）。"""
     serpentine(img, lanes=4, start_down=False, width_frac=0.098,
-               left=0.22, right=0.78)
+               left=0.22, right=0.78, end_gap=END_GAP)
 
 
 def draw_lanes4w(img: Image.Image) -> None:
