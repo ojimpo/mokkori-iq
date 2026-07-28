@@ -198,3 +198,10 @@ Cosense「mokkori-iq 進捗ログ」のミラー。時刻は JST（ツール実�
 - 残った注意点（両方の CLAUDE.md に明記）: health 側に `/api/oauth/strava` の再認可フローがコード上残っており、**そこから再認可すると系統が枝分かれして autopilot を壊しうる**。Strava の再認可は autopilot 側で行うこと
 - 訂正: 「NAS に Claude Code が入っていない」と報告したが**誤り**。非対話 ssh で PATH が通っていなかっただけで、`~/.local/bin/claude` に 2.1.197 が入っている（ユーザー指摘）
 - **strava-autopilot はローカルリポジトリで git remote が無い**ため push できず、コミットのみ（3f89f72 / 19aab68）
+
+### 19:20 strava-autopilot を公開リポジトリ化 + 引き継ぎメモ整備
+- **公開前の安全確認**（これをやらずに public にしてはいけない）: `.gitignore` に `.env` と `data/`（＝OAuth トークンの入った SQLite）があること、**履歴にも一度も入っていない**こと、`client_secret` の値が全履歴に grep で出ないこと、を確認 → すべてクリア
+- README は既に「作った背景・設計思想・仕組み」が書かれた状態だったので、**Strava ゲートウェイの節を追記**して公開（3アプリの関係図・エンドポイント一覧・キー未設定なら無効という安全側の既定値）
+- `gh repo create ojimpo/strava-autopilot --public` で作成・push。About は英語、topics は strava / strava-api / fastapi / self-hosted / cycling / automation / oauth2
+- health-ojimpo の残課題（`/api/oauth/strava` の再認可ルートをどうするか）を **Todoist にタスク化**（p3。選択肢 A/B/C と背景つき）
+- **`docs/app_handoff.md` を新設**: 別セッションでアプリ開発を続けるための引き継ぎ（30秒でわかる現状表・起動コマンド・ファイル構成・移植で守る数値ルール・残作業の優先順・未着手の設計判断・落とし穴）。CLAUDE.md からも参照させた

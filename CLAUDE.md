@@ -264,6 +264,7 @@ sudo usermod -aG dialout $USER                              # シリアル権限
     再集計したのと同じことがアプリ内で起きる）。デバイス上のフラッシュは吸い出し後に消してよい理由もこれ。
 
 ### Phase A 実装状況 (2026-07-28 着手。app/ ディレクトリ)
+**アプリ開発を再開するときは `docs/app_handoff.md` を最初に読む**（現状・起動手順・残作業・落とし穴）。
 プランは `docs/phase2_app_plan.md`。**解析コアの Swift 移植とパリティは完了**、アプリはシミュレータでビルド・起動確認済み。
 - **`app/MokkoriCore`** = 解析エンジン Swift Package（turn_stand / swim_report の移植。iOS17+/macOS14+ 両対応）。
   ```bash
