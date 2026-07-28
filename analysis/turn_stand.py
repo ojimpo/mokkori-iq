@@ -169,6 +169,34 @@ def detect_walls(sess, thr=2.0, vthr=5.0, refractory=12.0, tau=1.0):
             last = a
     turns = [(a, b) for a, b, k in kept if k == 'turn']
 
+    # rhythm recovery: walls are near-equidistant within a block. A swim gap
+    # (end of one stand -> start of the next, standing time excluded) of ~2x
+    # the block's median, with a clear sub-threshold vertical excursion at its
+    # midpoint, is a missed shallow/quick stand -> recover one wall there.
+    # Both known misses (6/21 @721s peak 3.5, 7/28 @532s peak 1.35) have
+    # exactly this shape; gz > 0 is ~45% of the swim->stand swing, far above
+    # mid-swim noise (~ -7.5 +/- 1.5). Needs >= 6 walls for a stable median.
+    starts = [t[0]] + [b for _, b in bigs]
+    ends = [a for a, _ in bigs] + [t[-1]]
+    walls_all = sorted(turns + rests)
+    recovered = []
+    for bs, be in zip(starts, ends):
+        w = [(a, b) for a, b in walls_all if bs <= a <= be]
+        if len(w) < 6:
+            continue
+        gaps = [w[k + 1][0] - w[k][1] for k in range(len(w) - 1)]
+        med = float(np.median(gaps))
+        for (a0, b0), (a1, _), g in zip(w, w[1:], gaps):
+            if not (1.6 * med <= g <= 2.6 * med):
+                continue
+            m = (t >= b0 + 0.3 * g) & (t <= b0 + 0.7 * g)
+            if not m.any():
+                continue
+            k = np.flatnonzero(m)[int(np.argmax(gz[m]))]
+            if gz[k] > 0.0:
+                recovered.append((t[k] - 0.5, t[k] + 0.5))
+    turns = sorted(turns + recovered)
+
     # tap triples: >=3 tap-blips within a 4 s span (the 3-tap markers)
     triples, i = [], 0
     while i < len(taps):
@@ -183,9 +211,8 @@ def detect_walls(sess, thr=2.0, vthr=5.0, refractory=12.0, tau=1.0):
 
     return {
         "gz": gz, "turns": turns, "rests": rests, "bigs": bigs,
-        "taps": taps, "triples": triples,
-        "starts": [t[0]] + [b for _, b in bigs],
-        "ends": [a for a, _ in bigs] + [t[-1]],
+        "taps": taps, "triples": triples, "recovered": recovered,
+        "starts": starts, "ends": ends,
     }
 
 
@@ -218,6 +245,9 @@ def main():
           f"gz_thr {args.thr}  pool {args.pool:.0f}m")
     print(f"episodes: {len(turns)} turns, {len(rests)} rests, "
           f"{len(bigs)} big-rests, {len(taps)} tap-blips ({len(triples)} triples)")
+    if d["recovered"]:
+        print("rhythm-recovered walls: "
+              + ", ".join(f"{(a+b)/2:.0f}s" for a, b in d["recovered"]))
 
     total_len = 0
     print(f"\n{'block':>5} {'start':>7} {'end':>7} {'turns':>5} {'rests':>5} "
@@ -256,8 +286,10 @@ def main():
     fig, ax = plt.subplots(figsize=(17, 5))
     ax.plot(t, gz, lw=0.4, color="0.5")
     ax.axhline(args.thr, color="orange", lw=0.8, ls="--", label=f"thr={args.thr}")
-    for a, _ in turns:
-        ax.axvline(a, color="red", lw=0.8, alpha=0.7)
+    rec = set(d["recovered"])
+    for a, b in turns:
+        ax.axvline(a, color=("darkorange" if (a, b) in rec else "red"),
+                   lw=0.8, alpha=0.7)
     for a, b in rests:
         ax.axvspan(a, b, color="green", alpha=0.25)
     for a, b in bigs:
@@ -267,7 +299,8 @@ def main():
     ax.set_ylabel("gz gravity (m/s^2)")
     ax.set_xlabel("time (s)")
     ax.set_title(os.path.basename(args.csv) +
-                 f"  red=turn green=rest purple=bigrest blue=tap  ~{total_len} lengths")
+                 f"  red=turn orange=recovered green=rest purple=bigrest blue=tap"
+                 f"  ~{total_len} lengths")
     ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
     fig.savefig(out, dpi=110)
