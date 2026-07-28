@@ -64,20 +64,54 @@ def stroke_arc(d, cx, cy, r, a0, a1, w):
     d.arc([cx - rr, cy - rr, cx + rr, cy + rr], a0, a1, fill=MARK, width=w)
 
 
-def draw_lanes(img: Image.Image) -> None:
-    """往復コース: レーンを下って壁でUターン、を3本ぶん。
-    「プールを往復する」がそのまま形になっていて、他のスイムアプリと被りにくい。"""
+def serpentine(img: Image.Image, lanes: int, start_down: bool, width_frac: float,
+               left=0.28, right=0.72, top=0.24, bot=0.76) -> None:
+    """往復コース: レーンを泳いで壁でUターン、を lanes 本ぶん。
+    `start_down=True` なら左上から下り始める。レーン数と向きで見え方が変わる:
+      3本・下り始め = S 字 / 4本・上り始め = M 字（上に山が2つ）。"""
     d = ImageDraw.Draw(img)
-    w = int(N * 0.115)
-    xs = [N * 0.28, N * 0.5, N * 0.72]
-    top, bot = N * 0.24, N * 0.76
-    r = (xs[1] - xs[0]) / 2
+    w = int(N * width_frac)
+    step = (right - left) / (lanes - 1)
+    xs = [N * (left + step * i) for i in range(lanes)]
+    top, bot = N * top, N * bot
+    r = step * N / 2
 
-    stroke_line(d, xs[0], top, xs[0], bot - r, w)
-    stroke_arc(d, xs[0] + r, bot - r, r, 0, 180, w)        # 下の壁でターン
-    stroke_line(d, xs[1], bot - r, xs[1], top + r, w)
-    stroke_arc(d, xs[1] + r, top + r, r, 180, 360, w)      # 上の壁でターン
-    stroke_line(d, xs[2], top + r, xs[2], bot, w)
+    going_down = start_down
+    for i in range(lanes):
+        # レーンの縦線。`going_down` はこのレーンを進む向き。
+        # 端のレーンだけ壁まで伸ばし、途中のレーンは両端をターンの弧に譲る。
+        if i == 0:
+            y0, y1 = (top, bot - r) if going_down else (bot, top + r)
+        elif i == lanes - 1:
+            # 弧から入ってくるので、入口は向きと逆側の壁ぎわ
+            y0, y1 = (top + r, bot) if going_down else (bot - r, top)
+        else:
+            y0, y1 = (top + r, bot - r) if going_down else (bot - r, top + r)
+        stroke_line(d, xs[i], y0, xs[i], y1, w)
+
+        if i < lanes - 1:                       # 壁でターン
+            if going_down:
+                stroke_arc(d, xs[i] + r, bot - r, r, 0, 180, w)     # 下の壁
+            else:
+                stroke_arc(d, xs[i] + r, top + r, r, 180, 360, w)   # 上の壁
+            going_down = not going_down
+
+
+def draw_lanes(img: Image.Image) -> None:
+    """3本・下り始め。S 字に近い形。"""
+    serpentine(img, lanes=3, start_down=True, width_frac=0.115)
+
+
+def draw_lanes4m(img: Image.Image) -> None:
+    """4本・上り始め = 上に山が2つ出て M に見える形。"""
+    serpentine(img, lanes=4, start_down=False, width_frac=0.098,
+               left=0.22, right=0.78)
+
+
+def draw_lanes4w(img: Image.Image) -> None:
+    """4本・下り始め = 下に谷が2つ出て W に見える形。"""
+    serpentine(img, lanes=4, start_down=True, width_frac=0.098,
+               left=0.22, right=0.78)
 
 
 def draw_turn(img: Image.Image) -> None:
@@ -120,7 +154,8 @@ def draw_bars(img: Image.Image) -> None:
         y += h + gap
 
 
-CONCEPTS = {"lanes": draw_lanes, "turn": draw_turn, "bars": draw_bars}
+CONCEPTS = {"lanes": draw_lanes, "lanes4m": draw_lanes4m, "lanes4w": draw_lanes4w,
+            "turn": draw_turn, "bars": draw_bars}
 
 
 def render(concept: str) -> Image.Image:
@@ -151,12 +186,25 @@ def main():
     ap.add_argument("--palette", choices=sorted(PALETTES), default="aqua")
     ap.add_argument("--layers", action="store_true",
                     help="Liquid Glass 用に背景とマークを別レイヤーで書き出す")
+    ap.add_argument("--tinted", action="store_true",
+                    help="淡色（tinted）用: 背景透過・マークのみ。システムが色を付ける")
     ap.add_argument("--out", default=None)
     ap.add_argument("--out-dir", default=None)
     args = ap.parse_args()
 
     global BG_TOP, BG_BOTTOM, MARK
     BG_TOP, BG_BOTTOM, MARK = PALETTES[args.palette]
+
+    if args.tinted:
+        # iOS 18+ の「淡色」バリアント。背景はシステムが敷くので透過にして、
+        # マークだけ白で置く（システムがユーザーの色でティントする）。
+        fg = Image.new("RGBA", (N, N), (0, 0, 0, 0))
+        CONCEPTS[args.concept](fg)
+        path = args.out or "icon-tinted.png"
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        fg.resize((SIZE, SIZE), Image.LANCZOS).save(path)
+        print(f"wrote {path}")
+        return
 
     if args.layers:
         write_layers(args.concept, args.out_dir or ".")

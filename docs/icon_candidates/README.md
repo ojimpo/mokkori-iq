@@ -15,12 +15,34 @@
 
 ## 採用
 
-**lanes / aqua**: レーンを下って壁で U ターン、を 3 本ぶん。
-「プールを往復する」がそのまま形になっていて、泳者アイコンだらけの中で被りにくい。
+**lanes4m / aqua**: レーンを泳いで壁で U ターン、を 4 本ぶん。上に山が2つ出て
+**M** に見える（往復コースであると同時に mokkori の M）。泳者アイコンだらけの中で被りにくい。
 配色はプールの水色（`#5cd0f5` → `#0f74cc`）にマークは白。
+
+レーン数と向きは `serpentine()` の引数なので、3本の S 字（`lanes`）や
+4本の W 字（`lanes4w`）にも振り直せる。`_shapes4.png` に並べてある。
 
 `_compare.png` に形の 3 案、`_colors.png` に配色の 3 案が並べてある
 （下段はホーム画面と同じ 120px。小さくして潰れないかを見るため）。
+
+## 外観バリアント（ライト / ダーク / 淡色）
+
+**1枚だけ置くと、ダークモードでシステムが勝手に暗くする**（実機の並びで確認した。
+水色のはずが濃紺に沈む）。明るい水色を保ちたいので、`Contents.json` に
+`appearances` を書いて3枚を明示している:
+
+| 外観 | ファイル | 中身 |
+|---|---|---|
+| ライト | `icon-1024.png` | 水色の不透明画像 |
+| ダーク | `icon-1024-dark.png` | 同じ水色（暗くしない） |
+| 淡色 | `icon-1024-tinted.png` | **背景透過・マークのみ**（色はシステムが付ける） |
+
+```bash
+.venv/bin/python tools/make_icon.py --concept lanes4m --palette aqua --tinted \\
+  --out app/MokkoriIQ/Sources/Assets.xcassets/AppIcon.appiconset/icon-1024-tinted.png
+```
+
+なお iOS 26 は**このフラットな PNG にもガラスの光沢を乗せてくれる**（ホーム画面で確認済み）。
 
 ## Liquid Glass (iOS 26)
 

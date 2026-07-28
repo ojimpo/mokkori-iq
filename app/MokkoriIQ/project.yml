@@ -35,7 +35,7 @@ targets:
         # ため、カスタム URL スキームの登録は不要。
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
-        CFBundleDisplayName: mokkori-iq
+        CFBundleDisplayName: Mokkori IQ
     settings:
       base:
         SDKROOT: iphoneos
