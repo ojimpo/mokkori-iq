@@ -16,16 +16,24 @@ targets:
     sources: [Sources]
     dependencies:
       - package: MokkoriCore
+    info:
+      path: Sources/Info.plist
+      properties:
+        # Strava OAuth のコールバック先。ASWebAuthenticationSession 自体は
+        # 登録不要だが、Strava アプリ側から開かれる経路のために登録しておく。
+        CFBundleURLTypes:
+          - CFBundleURLName: com.ojimpo.mokkori-iq
+            CFBundleURLSchemes: [mokkoriiq]
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        CFBundleDisplayName: mokkori-iq
     settings:
       base:
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         PRODUCT_BUNDLE_IDENTIFIER: com.ojimpo.mokkori-iq
-        GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1"          # iPhone 専用
         SWIFT_VERSION: "5.0"
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
-        INFOPLIST_KEY_CFBundleDisplayName: mokkori-iq
+        # 上の info: ブロックが Info.plist を生成するので INFOPLIST_KEY_* は使わない

@@ -6,7 +6,7 @@ import MokkoriCore
 /// 壁の編集（オーバーレイ）はその上に適用して即時再計算する。
 @Observable
 final class SessionAnalysisModel {
-    let meta: SessionStore.Meta
+    private(set) var meta: SessionStore.Meta
     private let store: SessionStore
 
     private(set) var session: SwimSession?
@@ -77,6 +77,32 @@ final class SessionAnalysisModel {
         await recompute()
     }
 
+    // MARK: - 時刻アンカー / Strava
+
+    /// サンプル0の絶対時刻。BLE 時刻同期が入るまでは手動入力（Phase B のつなぎ）。
+    @MainActor
+    func setStartEpoch(_ date: Date?) {
+        meta.startEpoch = date
+        try? store.save(meta: meta)
+    }
+
+    @MainActor
+    func setStravaActivityId(_ id: Int?) {
+        meta.stravaActivityId = id
+        try? store.save(meta: meta)
+    }
+
+    /// 泳ぎ始めの絶対時刻（アンカー + 最初のレップ開始）。アンカー未設定なら nil。
+    var swimStartDate: Date? {
+        guard let anchor = meta.startEpoch, let first = report?.reps.first else { return nil }
+        return anchor.addingTimeInterval(first.span.start)
+    }
+
+    var stravaSummary: StravaSummary? {
+        guard let report, let anchor = meta.startEpoch else { return nil }
+        return StravaSummary(report: report, startEpoch: anchor)
+    }
+
     @MainActor
     private func recompute() async {
         guard let session, let baseDetection else { return }
@@ -92,10 +118,9 @@ final class SessionAnalysisModel {
         report = r.1
         intervals = r.2
         // 一覧のサマリも編集後の値へ追随させる
-        var m = meta
-        m.distance = r.1.distance
-        m.movingTime = r.1.movingTime
-        m.elapsed = r.1.elapsed
-        try? store.save(meta: m)
+        meta.distance = r.1.distance
+        meta.movingTime = r.1.movingTime
+        meta.elapsed = r.1.elapsed
+        try? store.save(meta: meta)
     }
 }

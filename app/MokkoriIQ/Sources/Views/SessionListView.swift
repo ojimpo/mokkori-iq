@@ -46,6 +46,13 @@ struct SessionListView: View {
                         }
                     }
                 }
+                ToolbarItem(placement: .topBarLeading) {
+                    NavigationLink {
+                        SettingsView()
+                    } label: {
+                        Label("設定", systemImage: "gearshape")
+                    }
+                }
             }
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: [.commaSeparatedText, .plainText]) { res in

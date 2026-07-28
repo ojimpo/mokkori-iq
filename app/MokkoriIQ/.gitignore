@@ -1,3 +1,4 @@
 MokkoriIQ.xcodeproj/
 build/
 .build/
+Sources/Info.plist

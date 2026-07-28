@@ -3,11 +3,13 @@ import SwiftUI
 @main
 struct MokkoriIQApp: App {
     @State private var store = SessionStore()
+    @State private var strava = StravaService()
 
     var body: some Scene {
         WindowGroup {
             SessionListView()
                 .environment(store)
+                .environment(strava)
         }
     }
 }

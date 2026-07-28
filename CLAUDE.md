@@ -285,8 +285,12 @@ sudo usermod -aG dialout $USER                              # シリアル権限
 - **本ごとメトリクス実装済み (2026-07-28)**: swim_report.py と MokkoriCore の両方に ストローク数/SWOLF/DPS/ベストペース
   （RBJ バンドパス biquad + prone ゲート付きヒステリシスゼロクロス。FFT 不使用で Swift と同一算術）。中央値 14/本・SWOLF 平均44。
   期待値は regression_check.py と ParityTests の両方にピン留め済み（変更時は3点同時更新: Python実装/Swift実装/両テスト）。
+- **Phase B (Strava) 実装済み (2026-07-28)**: 設定画面で client_id/secret を入力 → `ASWebAuthenticationSession` で認可
+  （`activity:write` のみ）→ レポート画面「Strava へアップ」→ 時刻アンカーを手入力して手動アクティビティ POST。
+  トークン・secret は Keychain。投稿内容の組み立ては `MokkoriCore/StravaSummary`（規約の実装。名前は時間帯デフォルト、
+  説明文に実経過・ペース・ストローク・SWOLF・ベスト）。**アプリは strava-autopilot とは別の API アプリを使う**（下記）。
 - 未了: SPM 表示（スペクトル cadence はコア未移植・後回し可。本ごとストローク数から導出可能）、
-  手動時刻アンカー UI と Strava アップ（Phase B）、実機 iPhone での動作確認。
+  実機 iPhone での動作確認、**Strava API アプリの登録（ユーザー作業。下記）**。
 - 落とし穴: Xcode 26.6 は **iOS 26.5 シミュレータランタイム必須**（26.4 が残っていても destination が1つも出ず
   "iOS 26.5 is not installed" になる）。`xcodebuild -downloadPlatform iOS` で導入（2026-07-28 導入済み・26.4 は削除）。
   CoreSimulator が古い警告が出たら `launchctl remove com.apple.CoreSimulator.CoreSimulatorService` で再起動。
@@ -340,10 +344,18 @@ sudo usermod -aG dialout $USER                              # シリアル権限
 - 現状は Strava の**手動アクティビティ** `POST /api/v3/activities`（`sport_type=Swim` / `start_date_local` /
   `elapsed_time`=moving / `distance` / `description`）。手動作成では moving=elapsed になるため、実経過との差は説明文で補う。
   将来レップ別スプリットまで出したくなったら TCX アップロード（Lap に `Intensity=Resting` で休憩を表現）へ移行する。
-- **認証は自作の別アプリ `strava-autopilot` のものを流用**（arigato-nas: `~/dev/strava-autopilot/`）。
-  `.env` に `STRAVA_CLIENT_ID/SECRET`、`data/autopilot.db` の `oauth_tokens` テーブルに `activity:write` 込みのトークン。
-  **アクセストークンが有効なうちは使うだけにしてリフレッシュしない**（refresh するとトークンが回って autopilot 側が壊れうる）。
-  期限切れ時は autopilot 自身にリフレッシュさせるのが安全。
+- **認証 (2026-07-28 方針確定)**: **mokkori-iq 専用の API アプリを新規登録して使う**。
+  Strava は **1 Strava アカウントにつき API アプリ 1個**なので、本アカウントは既に `strava-autopilot` が使っている。
+  → **API アプリ登録用のサブアカウント**を作り、そこで mokkori-iq のアプリを登録する（Strava 公式コミュニティが
+  「別アプリのために別アカウントを作るのは可」と回答している運用。レート制限回避目的ではないので問題ない）。
+  投稿先は**本アカウント**: 認可画面に本アカウントでログインして許可すれば、そのトークンで本アカウントに投稿できる
+  （アプリの所有者と、認可するアスリートは別で構わない）。
+  - 登録値: Authorization Callback Domain = `localhost`（Strava が明示的にホワイトリスト）。
+    アプリ側リダイレクト = `mokkoriiq://localhost/callback`（`Info.plist` に URL スキーム登録済み）。
+  - client_id/secret はアプリの設定画面から入力し **Keychain** に保存（リポジトリには置かない）。
+  - **専用 client なのでリフレッシュしてよい**（autopilot のトークンとは無関係）。
+    ※ Mac 側の Python から手投げするとき **だけ** は従来どおり autopilot のトークンを「使うだけ・refresh しない」。
+- 手動アクティビティの旧経路（Mac から curl / Python）は緊急時のフォールバックとして残すが、通常はアプリから投稿する。
 - 注意: アカウントの既定公開範囲が `everyone`。非公開にしたいセッションは投稿後に Strava 側で変更する。
 
 ## パラメータ変更

@@ -49,6 +49,14 @@ struct SessionDetailView: View {
                 } label: {
                     Label("壁インターバルを確認・修正", systemImage: "checklist")
                 }
+                NavigationLink {
+                    StravaUploadView(model: model)
+                } label: {
+                    Label(model.meta.stravaActivityId == nil
+                          ? "Strava へアップ" : "Strava にアップ済み",
+                          systemImage: model.meta.stravaActivityId == nil
+                          ? "square.and.arrow.up" : "checkmark.circle")
+                }
             } footer: {
                 Text(model.isEdited ? "壁の修正が適用されています" :
                         "Strava アップ前にここで検出結果を確認します")

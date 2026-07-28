@@ -42,13 +42,18 @@ Strava へアップ、まで iPhone だけで完結させる（タブレット�
    （SwiftData か生ファイル+JSON。生サンプルはバイナリのまま保存が容量的に有利: 9.6MB CSV → 2MB バイナリ）。
 6. 取込は当面「ファイル」アプリ/AirDrop 経由の CSV インポート（flash_dump の CSV がそのまま入る）。
 
-### Phase B: Strava アップロード
-1. OAuth: mokkori-iq 用に Strava API アプリを新規登録するか strava-autopilot の client を
-   流用するかを決める（**要ユーザー判断**。モバイルのリダイレクト URI 設定が絡む）。
-   scope は `activity:write` のみで足りる。トークンはアプリ内 Keychain 保存。
+### Phase B: Strava アップロード（2026-07-28 実装済み。残りは API アプリ登録＝ユーザー作業）
+1. OAuth: **mokkori-iq 専用の API アプリを新規登録する**方針に決定（詳細と理由は CLAUDE.md
+   「Strava 投稿の規約」の認証節）。Strava は 1 アカウント 1 アプリなので、**登録用のサブアカウント**で
+   アプリを作り、**認可は本アカウント**で行う（投稿先は本アカウント）。
+   Callback Domain = `localhost` / アプリのリダイレクト = `mokkoriiq://localhost/callback`。
+   scope は `activity:write` のみ。client_id/secret とトークンは Keychain 保存。
+   実装: `StravaService`（ASWebAuthenticationSession + web の `oauth/authorize`。
+   `oauth/mobile/authorize` は app-to-app でセッション外にコールバックが戻り取りこぼすので使わない）。
 2. 確認画面 →「アップ」で手動アクティビティ POST（規約どおり: moving time / 泳ぎ始め開始 /
    名前は時間帯デフォルト）。アップ済みフラグと activity id をセッションに保存。
-3. 時刻アンカーが無いセッション用に、手動アンカー入力 UI（「退館時刻」等 1 点から逆算。
+   投稿内容の組み立ては `MokkoriCore/StravaSummary`（Swift 側が規約の実装）。
+3. 時刻アンカーが無いセッション用に、手動アンカー入力 UI（「泳ぎ始め」または「記録終了」1 点から逆算。
    7/28 で実証済みの方法）を暫定で付ける。BLE 時刻同期が入るまでのつなぎ。
 
 ### Phase C: ファーム時刻アンカー（USB 完結・Todoist「ログに現在時刻」ステップ1）

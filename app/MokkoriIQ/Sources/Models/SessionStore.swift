@@ -22,8 +22,10 @@ final class SessionStore {
         var distance: Double
         var movingTime: Double
         var elapsed: Double
-        /// 時刻アンカー: サンプル0の絶対時刻。Phase C までは手動入力用の器
+        /// 時刻アンカー: サンプル0の絶対時刻。BLE 時刻同期（Phase C/D）までは手動入力
         var startEpoch: Date?
+        /// Strava にアップ済みならその activity id
+        var stravaActivityId: Int?
     }
 
     private(set) var sessions: [Meta] = []

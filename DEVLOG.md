@@ -155,3 +155,11 @@ Cosense「mokkori-iq 進捗ログ」のミラー。時刻は JST（ツール実�
 - 注: スクラッチ検証の「15/本」に対し committed 実装は 14/本。±1 差はスペクトル整合の範囲内（SPM 30cyc/min × 泳ぎ約29s ≈ 14.5）で、どちらも妥当。committed 値を正とする
 - **ピン留めを3点セットで追加**: regression_check.py（strokes 中央値/合計/計測本数/SWOLF平均）と Swift ParityTests に同一期待値。ストローク合計 647/576 が **Python と Swift で完全一致**（2/2 PASS・swift test 全green）
 - アプリのレポート画面: サマリに「ストローク」「SWOLF」行、本ごとセクション（タイム/str/SWOLF 一覧 + ベストペース/DPS フッタ）を追加。シミュレータビルド成功
+
+### 18:10 Phase B: Strava 連携をアプリに実装（OAuth 方針の調査 → 実装）
+- **OAuth 方針を調査して決定**: Strava は **1 Strava アカウントにつき API アプリ 1個**（公式コミュニティ回答）。本アカウントは strava-autopilot が使用済みなので、mokkori-iq 用は**登録用サブアカウントで新規登録**する。認可は本アカウントで行えば投稿先は本アカウント（アプリ所有者と認可アスリートは別で構わない）。ユーザーは Strava 課金中で継続課金の意思あり＝サブスクは登録要件ではないが問題なし
+  - 当初検討した「autopilot の client 流用」は、リフレッシュでトークンが回って autopilot が壊れうるリスクが消せない。「autopilot をプロキシにする」案も検討したが、投稿のたびに NAS 到達（Tailscale ON）が必要になるので、専用アプリ登録が一番素直と判断
+- **実装**: `StravaService`（ASWebAuthenticationSession + **web の** `oauth/authorize`。`oauth/mobile/authorize` は Strava アプリへ app-to-app で飛びコールバックが認証セッション外に戻って取りこぼすので使わない）／`Keychain`（client_secret・トークン）／設定画面（資格情報入力・連携/解除）／`StravaUploadView`（**手動時刻アンカー**: 「泳ぎ始め」or「記録終了」を1点入れて sample0 の絶対時刻を逆算 → 投稿プレビュー → POST）
+- **投稿内容の組み立ては `MokkoriCore/StravaSummary`**（＝規約の実装をコア側に置いてテスト可能に）: 名前は時間帯デフォルト（朝/お昼/午後/夜のスイム）、elapsed_time=moving（泳ぎのみ）、start_date_local=泳ぎ始め、説明文に実経過・ペース・ストローク/SWOLF・ベスト。「控えめ」等の断り書きは書かない（保守バイアス撤廃済み）
+- Callback Domain は `localhost`（Strava が明示ホワイトリスト）、アプリのリダイレクトは `mokkoriiq://localhost/callback`。project.yml を `info:` ブロックに切り替えて **CFBundleURLTypes を Info.plist に登録**（生成 plist で確認済み）
+- ビルド成功・シミュレータ起動確認。**残りはユーザー作業の API アプリ登録**（サブアカウント作成 → strava.com/settings/api で登録 → client_id/secret をアプリの設定画面に入力）
