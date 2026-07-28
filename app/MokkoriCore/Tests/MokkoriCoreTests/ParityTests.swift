@@ -24,6 +24,11 @@ final class ParityTests: XCTestCase {
         let recoveredAt: [Double]   // 復元壁の中点時刻（±5s 許容 = regression_check の TOL_S）
         let distHalves: [Int]
         let distTotal: Int
+        // 本ごとメトリクス（regression_check と同じピン留め値）
+        let lengthCount: Int        // 本数（全本で strokes>0 = 計測可能）
+        let strokesTotal: Int
+        let splMedian: Double
+        let swolfAvgRounded: Int
     }
 
     func runSession(_ name: String, _ exp: Expectation) throws {
@@ -53,17 +58,29 @@ final class ParityTests: XCTestCase {
         // Python 側で実証済みの性質としてピン留めする
         XCTAssertTrue(report.reps.allSatisfy { !$0.crossCheck },
                       "\(name): CROSS-CHECK が発火（検出ずれ）")
+
+        // 本ごとメトリクス（ストローク数/SWOLF）も Python と同一値
+        XCTAssertEqual(report.lengths.count, exp.lengthCount, "\(name): lengths")
+        XCTAssertEqual(report.strokedLengths.count, exp.lengthCount,
+                       "\(name): 計測不能本（strokes=0）が出ている")
+        XCTAssertEqual(report.strokesTotal, exp.strokesTotal, "\(name): strokes total")
+        XCTAssertEqual(report.strokesPerLengthMedian, exp.splMedian,
+                       "\(name): strokes/length median")
+        XCTAssertEqual(Int((report.swolfAverage ?? 0).rounded()),
+                       exp.swolfAvgRounded, "\(name): swolf avg")
     }
 
     func testSession20260621() throws {
         try runSession("swim_20260621_171349.csv", Expectation(
             turns: 35, rests: 13, bigs: 2, recoveredAt: [724],
-            distHalves: [500, 675], distTotal: 1175))
+            distHalves: [500, 675], distTotal: 1175,
+            lengthCount: 47, strokesTotal: 647, splMedian: 14, swolfAvgRounded: 44))
     }
 
     func testSession20260728() throws {
         try runSession("swim_20260728_153415.csv", Expectation(
             turns: 41, rests: 1, bigs: 3, recoveredAt: [533],
-            distHalves: [625, 425], distTotal: 1050))
+            distHalves: [625, 425], distTotal: 1050,
+            lengthCount: 42, strokesTotal: 576, splMedian: 14, swolfAvgRounded: 44))
     }
 }

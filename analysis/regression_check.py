@@ -36,14 +36,20 @@ from turn_stand import detect_walls  # noqa: E402
 #                       session, both cross-checked against the time grid).
 #   7/28 total 1050 m is EXACT, not conservative: the swimmer confirmed it
 #   (planned 1000 m plus an extra 50 m at the end).
+#   strokes/swolf     : per-length gyro-roll zero-cross counts (2026-07-28).
+#                       Median 14/length is consistent with the spectral SPM
+#                       (30 cyc/min x ~29 s/length) and with SWOLF ~44; all
+#                       lengths measurable (prone gate kills warmup junk).
 EXPECT = {
     "swim_20260621_171349.csv": dict(
         turns=35, rests=13, bigs=2, recovered_at=[724],
         dist_halves=[500, 675], dist_total=1175,
+        spl_median=14, strokes_total=647, lengths_measured=(47, 47), swolf_avg=44,
     ),
     "swim_20260728_153415.csv": dict(
         turns=41, rests=1, bigs=3, recovered_at=[533],
         dist_halves=[625, 425], dist_total=1050,
+        spl_median=14, strokes_total=576, lengths_measured=(42, 42), swolf_avg=44,
     ),
 }
 TOL_S = 5.0        # tolerance for recovered-wall timestamps
@@ -78,6 +84,19 @@ def check(name, exp):
         fails.append(f"half dists: got {halves}, expected {exp['dist_halves']}")
     if total != exp["dist_total"]:
         fails.append(f"total dist: got {total}, expected {exp['dist_total']}")
+
+    st = re.search(r"strokes: 中央値 (\d+)/本 .*合計 (\d+)\s+\((\d+)/(\d+)本", out)
+    sw = re.search(r"swolf:\s+平均 (\d+)", out)
+    got_strokes = (int(st.group(1)), int(st.group(2)),
+                   (int(st.group(3)), int(st.group(4)))) if st else None
+    exp_strokes = (exp["spl_median"], exp["strokes_total"],
+                   exp["lengths_measured"])
+    if got_strokes != exp_strokes:
+        fails.append(f"strokes (med, total, measured): got {got_strokes}, "
+                     f"expected {exp_strokes}")
+    if (int(sw.group(1)) if sw else None) != exp["swolf_avg"]:
+        fails.append(f"swolf avg: got {sw and sw.group(1)}, "
+                     f"expected {exp['swolf_avg']}")
 
     status = "PASS" if not fails else "FAIL"
     print(f"{status} {name}")

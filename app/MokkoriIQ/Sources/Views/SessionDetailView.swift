@@ -94,6 +94,34 @@ struct SessionDetailView: View {
             } footer: {
                 Text("1本の典型泳ぎ時間 \(fmtTime(report.typicalLengthTime)) / \(Int(report.poolLength))m")
             }
+
+            if !report.lengths.isEmpty {
+                Section {
+                    ForEach(Array(report.lengths.enumerated()), id: \.offset) { _, l in
+                        HStack {
+                            Text("半\(l.half) R\(l.rep) L\(l.num)")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.1fs", l.duration))
+                                .monospacedDigit()
+                            Text("\(l.strokes)str")
+                                .monospacedDigit()
+                                .frame(width: 52, alignment: .trailing)
+                            Text("SWOLF \(Int(l.swolf.rounded(.down)))")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                                .frame(width: 76, alignment: .trailing)
+                        }
+                        .font(.caption)
+                    }
+                } header: {
+                    Text("本ごと（\(Int(report.poolLength))m）")
+                } footer: {
+                    if let best = report.bestLength, let dps = report.dps {
+                        Text("ベストペース \(fmtTime(best.duration / report.poolLength * 100))/100m（\(String(format: "%.1f", best.duration))s・半\(best.half) R\(best.rep) L\(best.num)）・DPS \(String(format: "%.2f", dps))m/ストローク")
+                    }
+                }
+            }
         }
     }
 
@@ -106,6 +134,13 @@ struct SessionDetailView: View {
             HStack {
                 stat("泳ぎ時間", fmtTime(report.movingTime))
                 stat("総経過時間", fmtTime(report.elapsed))
+            }
+            if let spl = report.strokesPerLengthMedian,
+               let swAvg = report.swolfAverage, let swBest = report.swolfBest {
+                HStack {
+                    stat("ストローク", "\(report.strokesTotal)（\(Int(spl))/本）")
+                    stat("SWOLF", "平均\(Int(swAvg.rounded()))・ベスト\(Int(swBest.rounded()))")
+                }
             }
         }
         .padding(.vertical, 4)

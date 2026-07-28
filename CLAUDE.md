@@ -282,7 +282,11 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   （`Documents/sessions/<uuid>/`）。int16 化は**CSV 直読みとビット単位同値をテストで担保**（RawRecording。ダメな形式は raw.csv フォールバック）。
   画面: セッション一覧 → レポート（距離/ペース/半分割/レップ内訳/CROSS-CHECK警告）→ **壁インターバル確認画面**
   （ハイライト・壁の追加/削除/マージ＝オーバーレイ編集・即時再計算・修正破棄）。
-- 未了: SPM 表示（コア未移植・後回し可）、手動時刻アンカー UI と Strava アップ（Phase B）、実機 iPhone での動作確認。
+- **本ごとメトリクス実装済み (2026-07-28)**: swim_report.py と MokkoriCore の両方に ストローク数/SWOLF/DPS/ベストペース
+  （RBJ バンドパス biquad + prone ゲート付きヒステリシスゼロクロス。FFT 不使用で Swift と同一算術）。中央値 14/本・SWOLF 平均44。
+  期待値は regression_check.py と ParityTests の両方にピン留め済み（変更時は3点同時更新: Python実装/Swift実装/両テスト）。
+- 未了: SPM 表示（スペクトル cadence はコア未移植・後回し可。本ごとストローク数から導出可能）、
+  手動時刻アンカー UI と Strava アップ（Phase B）、実機 iPhone での動作確認。
 - 落とし穴: Xcode 26.6 は **iOS 26.5 シミュレータランタイム必須**（26.4 が残っていても destination が1つも出ず
   "iOS 26.5 is not installed" になる）。`xcodebuild -downloadPlatform iOS` で導入（2026-07-28 導入済み・26.4 は削除）。
   CoreSimulator が古い警告が出たら `launchctl remove com.apple.CoreSimulator.CoreSimulatorService` で再起動。

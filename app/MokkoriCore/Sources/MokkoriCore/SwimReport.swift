@@ -22,14 +22,45 @@ public struct SwimReport {
         public let pace100: Double    // s /100m
     }
 
+    /// 1本（壁を蹴ってから次の壁到着まで）。ガーミン互換メトリクスの単位。
+    public struct Length {
+        public let half: Int          // 1-based ブロック番号
+        public let rep: Int           // 1-based レップ番号
+        public let num: Int           // 1-based レップ内の本番号
+        public let span: Span
+        public let strokes: Int       // ロールサイクル数 = ガーミンのストローク数
+        public var duration: Double { span.duration }
+        public var swolf: Double { duration + Double(strokes) }
+    }
+
     public let typicalLengthTime: Double
     public let poolLength: Double
     public let reps: [Rep]
     public let halves: [Half]
+    public let lengths: [Length]
     public let distance: Double       // m
     public let movingTime: Double     // s（泳ぎのみ）
     public let elapsed: Double        // s（休憩込み）
     public var pace100: Double { distance > 0 ? movingTime / distance * 100 : 0 }
+
+    // 本ごとメトリクスの集計（strokes>0 の本だけ。0 = 計測不能本は集計から除外）
+    public var strokedLengths: [Length] { lengths.filter { $0.strokes > 0 } }
+    public var strokesTotal: Int { lengths.reduce(0) { $0 + $1.strokes } }
+    public var strokesPerLengthMedian: Double? {
+        let s = strokedLengths
+        return s.isEmpty ? nil : Stats.median(s.map { Double($0.strokes) })
+    }
+    public var swolfAverage: Double? {
+        let s = strokedLengths
+        return s.isEmpty ? nil : s.reduce(0.0) { $0 + $1.swolf } / Double(s.count)
+    }
+    public var swolfBest: Double? { strokedLengths.map(\.swolf).min() }
+    public var bestLength: Length? { strokedLengths.min { $0.duration < $1.duration } }
+    /// 1ストロークで進む距離 (m/cycle)
+    public var dps: Double? {
+        guard let m = strokesPerLengthMedian, m > 0 else { return nil }
+        return poolLength / m
+    }
 }
 
 public enum SwimReporter {
@@ -82,8 +113,26 @@ public enum SwimReporter {
         for i in 0..<t.count { prone[i] = d.gz[i] < -2.0 }  // うつ伏せ=泳いでいる
 
         let Lt = typicalLengthTime(t: t, prone: prone, dt: dt, turns: d.turns)
+        let coeffs = StrokeCounter.bandpassCoeffs(fs: sess.fs)
+
+        /// t は単調増加なので [lo, hi] のマスクは連続区間 → 二分探索で範囲を取る
+        func indexRange(_ lo: Double, _ hi: Double) -> Range<Int>? {
+            var a = 0, b = t.count
+            while a < b {
+                let m = (a + b) / 2
+                if t[m] < lo { a = m + 1 } else { b = m }
+            }
+            let start = a
+            var c = start, dHi = t.count
+            while c < dHi {
+                let m = (c + dHi) / 2
+                if t[m] <= hi { c = m + 1 } else { dHi = m }
+            }
+            return start < c ? start..<c : nil
+        }
 
         var reps = [SwimReport.Rep]()
+        var lengths = [SwimReport.Length]()
         var halves = [SwimReport.Half]()
         var totalLen = 0
         var totalSwim = 0.0
@@ -108,6 +157,16 @@ public enum SwimReporter {
                 reps.append(SwimReport.Rep(half: hi + 1, rep: ri + 1, span: seg,
                                            swimTime: st, wallCount: wallLen,
                                            paceCount: paceLen, lengths: n))
+                for (li, ls) in StrokeCounter.lengthSpans(
+                        s0: seg.start, s1: seg.end, turns: d.turns).enumerated() {
+                    guard let r = indexRange(ls.start, ls.end) else { continue }
+                    let strokes = StrokeCounter.countStrokes(
+                        gx: sess.gx[r], gy: sess.gy[r], gz: sess.gz[r],
+                        prone: prone[r], coeffs: coeffs)
+                    lengths.append(SwimReport.Length(half: hi + 1, rep: ri + 1,
+                                                     num: li + 1, span: ls,
+                                                     strokes: strokes))
+                }
             }
             if hl > 0 {
                 let dist = Double(hl) * pool
@@ -123,6 +182,7 @@ public enum SwimReporter {
                           poolLength: pool,
                           reps: reps,
                           halves: halves,
+                          lengths: lengths,
                           distance: Double(totalLen) * pool,
                           movingTime: totalSwim,
                           elapsed: t.isEmpty ? 0 : t[t.count - 1] - t[0])
