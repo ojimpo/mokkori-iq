@@ -24,9 +24,8 @@ struct DeviceView: View {
         NavigationStack {
             List {
                 connectionSection
-                logSection
-                statusSection
-                maintenanceSection
+                recordingSection
+                bodySection
                 hapticSection
             }
             .navigationTitle("Mokkori IQ")
@@ -78,10 +77,39 @@ struct DeviceView: View {
         }
     }
 
-    // MARK: - ログ
+    // MARK: - 記録データ（本体メモリーの中身）
 
-    private var logSection: some View {
+    /// メモリーの「中身の量」と「中身に対する操作（取り込む・消す）」は同じものの
+    /// 話なので1つの節にまとめる。分けると、消したら容量がどうなるのかが見えない。
+    private var recordingSection: some View {
         Section {
+            VStack(spacing: 0) {
+                HStack(alignment: .top, spacing: 12) {
+                    MetricTile(label: "記録時間",
+                               value: status.recordedSeconds.map(fmtClock) ?? "—",
+                               color: status.recordedSeconds == nil ? .secondary : Metric.time)
+                    MetricTile(label: "記録可能時間",
+                               value: status.remainingSeconds.map(fmtClock) ?? "—",
+                               color: status.remainingSeconds == nil ? .secondary : Metric.time)
+                }
+                .padding(.vertical, 8)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("メモリー使用量").font(.subheadline)
+                        Spacer()
+                        Text(status.usedFraction.map { "\(Int(($0 * 100).rounded()))%" } ?? "—")
+                            .font(.subheadline.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(status.usedFraction == nil
+                                             ? .secondary : Metric.distance)
+                    }
+                    ProgressView(value: status.usedFraction ?? 0)
+                        .tint(Metric.distance)
+                }
+                .padding(.bottom, 8)
+            }
+
             Button {
                 showImporter = true
             } label: {
@@ -98,64 +126,6 @@ struct DeviceView: View {
                 Label("本体から吸い出す（BLE）", systemImage: "antenna.radiowaves.left.and.right")
             }
             .disabled(true)
-        } header: {
-            Text("ログ")
-        } footer: {
-            if let name = importedName {
-                Text("「\(name)」を取り込みました。ログタブで開けます")
-            } else {
-                Text("取り込んだログはログタブに並びます（\(store.sessions.count) 件）")
-            }
-        }
-        .headerProminence(.increased)
-    }
-
-    // MARK: - 本体の状態
-
-    private var statusSection: some View {
-        Section {
-            VStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 12) {
-                    MetricTile(label: "バッテリー",
-                               value: status.batteryPercent.map { "\($0)" } ?? "—",
-                               unit: status.batteryPercent == nil ? "" : "%",
-                               color: status.batteryPercent == nil ? .secondary : Metric.stroke)
-                    MetricTile(label: "メモリー使用量",
-                               value: status.usedFraction.map { "\(Int(($0 * 100).rounded()))" } ?? "—",
-                               unit: status.usedFraction == nil ? "" : "%",
-                               color: status.usedFraction == nil ? .secondary : Metric.distance)
-                }
-                .padding(.vertical, 8)
-                Divider()
-                HStack(alignment: .top, spacing: 12) {
-                    MetricTile(label: "記録済み",
-                               value: status.recordedSeconds.map(fmtClock) ?? "—",
-                               color: status.recordedSeconds == nil ? .secondary : Metric.time)
-                    MetricTile(label: "あと記録できる",
-                               value: status.remainingSeconds.map(fmtClock) ?? "—",
-                               color: status.remainingSeconds == nil ? .secondary : Metric.time)
-                }
-                .padding(.vertical, 8)
-            }
-        } header: {
-            Text("本体の状態")
-        } footer: {
-            Text(status.isKnown
-                 ? "本体の INFO から読んだ値です"
-                 : "未接続なので読めていません。フラッシュは 2MB で、52Hz なら約52分ぶん記録できます")
-        }
-        .headerProminence(.increased)
-    }
-
-    // MARK: - メンテナンス
-
-    private var maintenanceSection: some View {
-        Section {
-            Button {
-            } label: {
-                Label("時刻を合わせる", systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
-            }
-            .disabled(true)
 
             Button(role: .destructive) {
             } label: {
@@ -163,9 +133,46 @@ struct DeviceView: View {
             }
             .disabled(true)
         } header: {
-            Text("メンテナンス")
+            Text("記録データ")
         } footer: {
-            Text("どちらも本体との接続が要ります。時刻合わせが入ると、ログのアップロード時に時刻を手で入れる必要がなくなります。")
+            if let name = importedName {
+                Text("「\(name)」を取り込みました。ログタブで開けます")
+            } else {
+                Text("取り込んだログはログタブに並びます（\(store.sessions.count) 件）。フラッシュは 2MB で、52Hz なら約52分ぶん記録できます。消去は明示的に行ったときだけで、USB を抜いても消えません。")
+            }
+        }
+        .headerProminence(.increased)
+    }
+
+    // MARK: - 本体
+
+    private var bodySection: some View {
+        Section {
+            HStack(alignment: .top, spacing: 12) {
+                MetricTile(label: "バッテリー",
+                           value: status.batteryPercent.map { "\($0)" } ?? "—",
+                           unit: status.batteryPercent == nil ? "" : "%",
+                           color: status.batteryPercent == nil ? .secondary : Metric.stroke)
+                MetricTile(label: "電圧",
+                           value: status.batteryMillivolts.map {
+                               String(format: "%.2f", Double($0) / 1000) } ?? "—",
+                           unit: status.batteryMillivolts == nil ? "" : "V",
+                           color: status.batteryMillivolts == nil ? .secondary : Metric.stroke)
+            }
+            .padding(.vertical, 8)
+
+            Button {
+            } label: {
+                Label("時刻を合わせる",
+                      systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
+            }
+            .disabled(true)
+        } header: {
+            Text("本体")
+        } footer: {
+            Text(status.isKnown
+                 ? "本体の INFO から読んだ値です"
+                 : "未接続なので読めていません。時刻合わせが入ると、ログのアップロード時に時刻を手で入れる必要がなくなります。")
         }
         .headerProminence(.increased)
     }

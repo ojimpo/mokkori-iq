@@ -28,7 +28,16 @@ final class SessionStore {
         var stravaActivityId: Int?
     }
 
+
     private(set) var sessions: [Meta] = []
+
+    /// 一覧の見出し用の合計。平均ペースは「累計タイム ÷ 累計距離」で、
+    /// セッションごとのペースを平均し直さない（レポートの出し方と揃える）。
+    var totalDistance: Double { sessions.reduce(0) { $0 + $1.distance } }
+    var totalMovingTime: Double { sessions.reduce(0) { $0 + $1.movingTime } }
+    var averagePace100: Double? {
+        totalDistance > 0 ? totalMovingTime / totalDistance * 100 : nil
+    }
 
     private let root: URL
 
@@ -168,5 +177,64 @@ final class SessionStore {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(overlay).write(to: url)
+    }
+}
+
+extension SessionStore.Meta {
+
+    /// 一覧に出す日時が「どれくらい信用できるか」。
+    enum DateSource {
+        /// 時刻アンカー（Strava アップ時に人が入れた泳ぎ始め）。これだけが正確
+        case anchor
+        /// ファイル名 `swim_YYYYMMDD_HHMMSS.csv` の時刻。**記録開始ではなく吸い出し時刻**
+        /// （6/21・7/28 のセッションで確認済み）。泳いだのはこれより前
+        case dump
+        /// 上のどちらも取れないとき。アプリに取り込んだ時刻
+        case imported
+
+        var caption: String? {
+            switch self {
+            case .anchor:   return nil
+            case .dump:     return "吸い出し"
+            case .imported: return "取り込み"
+            }
+        }
+    }
+
+    /// 一覧の見出しに出す日時と、その出どころ。
+    var displayDate: (date: Date, source: DateSource) {
+        if let anchor = startEpoch { return (anchor, .anchor) }
+        if let d = Self.dateFromFilename(sourceFilename) { return (d, .dump) }
+        return (importedAt, .imported)
+    }
+
+    /// `swim_20260728_153415.csv` → その日時（端末のローカル時刻として読む）
+    static func dateFromFilename(_ name: String) -> Date? {
+        let digits = name.drop { !$0.isNumber }
+        let stamp = digits.filter(\.isNumber)
+        guard stamp.count >= 14 else { return nil }
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMddHHmmss"
+        return f.date(from: String(stamp.prefix(14)))
+    }
+}
+
+/// 一覧の日時表記。Apple フィットネスと同じ「7月28日(火)」の形。
+func fmtDay(_ d: Date) -> String {
+    SessionDateFormat.day.string(from: d)
+}
+func fmtDayTime(_ d: Date) -> String {
+    SessionDateFormat.dayTime.string(from: d)
+}
+
+private enum SessionDateFormat {
+    static let day = make("M月d日(E)")
+    static let dayTime = make("M月d日(E) HH:mm")
+
+    private static func make(_ format: String) -> DateFormatter {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "ja_JP")
+        f.dateFormat = format
+        return f
     }
 }

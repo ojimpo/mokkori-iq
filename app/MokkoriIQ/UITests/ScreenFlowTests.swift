@@ -30,6 +30,13 @@ final class ScreenFlowTests: XCTestCase {
         return app
     }
 
+    /// 一覧の行。見出しは日時になったので、行の特定はファイル名を含む補助行で行う
+    /// （日時の書式が変わっても壊れないように、完全一致ではなく CONTAINS で見る）。
+    func sessionRow(_ app: XCUIApplication, _ csv: String? = nil) -> XCUIElement {
+        app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", csv ?? sessionName)).firstMatch
+    }
+
     /// ラベルが出るまで下へ送る。レポート画面はペースグラフが入って縦に長くなり、
     /// 下のセクションは画面に入るまで生成されない（List の遅延生成）。
     @discardableResult
@@ -62,9 +69,12 @@ final class ScreenFlowTests: XCTestCase {
         app.launch()
 
         // 一覧: 取込が終わると行が出る（解析込みなので少し待つ）
-        let row = app.staticTexts[sessionName]
+        let row = sessionRow(app)
         XCTAssertTrue(row.waitForExistence(timeout: 60), "セッション行が出ない（取込か解析で失敗）")
-        XCTAssertTrue(app.staticTexts[distance].exists, "一覧に距離が出ていない")
+        // 一覧も値と単位を分けて描くので単位なしで照合（累計と行の両方に出る）
+        XCTAssertTrue(app.staticTexts[distanceValue].exists, "一覧に距離が出ていない")
+        XCTAssertTrue(app.staticTexts["累計距離"].exists, "累計サマリーが無い")
+        XCTAssertTrue(app.staticTexts["平均ペース"].exists, "累計の平均ペースが無い")
 
         row.tap()
 
@@ -85,7 +95,7 @@ final class ScreenFlowTests: XCTestCase {
         let app = makeApp()
         app.launch()
 
-        let row = app.staticTexts[sessionName]
+        let row = sessionRow(app)
         XCTAssertTrue(row.waitForExistence(timeout: 60))
         row.tap()
 
@@ -120,7 +130,7 @@ final class ScreenFlowTests: XCTestCase {
         for csv in [sessionName, "swim_20260621_171349.csv"] {
             let app = makeApp(session: csv)
             app.launch()
-            let row = app.staticTexts[csv]
+            let row = sessionRow(app, csv)
             XCTAssertTrue(row.waitForExistence(timeout: 60))
             row.tap()
             XCTAssertTrue(app.staticTexts["タイム"].waitForExistence(timeout: 20))
@@ -142,7 +152,7 @@ final class ScreenFlowTests: XCTestCase {
         let app = makeApp()
         app.launch()
 
-        let row = app.staticTexts[sessionName]
+        let row = sessionRow(app)
         XCTAssertTrue(row.waitForExistence(timeout: 60))
         row.tap()
 
@@ -188,7 +198,7 @@ final class ScreenFlowTests: XCTestCase {
                       "ログタブが無い")
         XCTAssertTrue(app.tabBars.buttons["デバイス"].exists, "デバイスタブが無い")
         // 起動時はログ側（セッション行が見えている）
-        XCTAssertTrue(app.staticTexts[sessionName].waitForExistence(timeout: 60),
+        XCTAssertTrue(sessionRow(app).waitForExistence(timeout: 60),
                       "起動時にログが開いていない")
         XCTAssertTrue(app.buttons["設定"].exists, "設定ボタンがログ画面に無い")
 
@@ -246,7 +256,7 @@ final class ScreenFlowTests: XCTestCase {
         let app = makeApp()
         app.launch()
 
-        let row = app.staticTexts[sessionName]
+        let row = sessionRow(app)
         XCTAssertTrue(row.waitForExistence(timeout: 60))
         row.tap()
         app.buttons["Strava へアップ"].firstMatch.tap()
