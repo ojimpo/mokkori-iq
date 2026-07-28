@@ -178,6 +178,70 @@ final class ScreenFlowTests: XCTestCase {
                       "修正を破棄しても元に戻らない")
     }
 
+    /// タブ構成: デバイス（本体まわり）とログ（今までの画面）の2つ。
+    /// 起動時はログ、設定は今までどおりログ画面の左上。
+    func testTabsAndDeviceScreen() {
+        let app = makeApp()
+        app.launch()
+
+        XCTAssertTrue(app.tabBars.buttons["ログ"].waitForExistence(timeout: 20),
+                      "ログタブが無い")
+        XCTAssertTrue(app.tabBars.buttons["デバイス"].exists, "デバイスタブが無い")
+        // 起動時はログ側（セッション行が見えている）
+        XCTAssertTrue(app.staticTexts[sessionName].waitForExistence(timeout: 60),
+                      "起動時にログが開いていない")
+        XCTAssertTrue(app.buttons["設定"].exists, "設定ボタンがログ画面に無い")
+
+        app.tabBars.buttons["デバイス"].tap()
+        XCTAssertTrue(app.staticTexts["Mokkori IQ"].waitForExistence(timeout: 10),
+                      "デバイス画面が出ない")
+        // BLE 未実装なので「未接続」と出し、本体が要る操作は押せない
+        XCTAssertTrue(app.staticTexts["未接続"].exists, "接続状態が出ていない")
+        XCTAssertTrue(app.buttons["ログを取り込む"].isEnabled, "取り込みが押せない")
+        XCTAssertFalse(app.buttons["時刻を合わせる"].isEnabled, "未接続でも時刻合わせが押せる")
+        XCTAssertFalse(app.buttons["メモリーを消去"].isEnabled, "未接続でも消去が押せる")
+        dump(app, "device_tab")
+    }
+
+    /// 振動は「3パターン固定 × 発動距離」。BLE もモーターも無いが、設定だけは今から作れる。
+    func testHapticPatternAssignmentPersists() {
+        let app = makeApp()
+        app.launch()
+        app.tabBars.buttons["デバイス"].tap()
+
+        // 振動の設定は画面の一番下。List は画面に入るまで行を作らないので送ってから見る
+        XCTAssertTrue(scrollTo(app, "振動フィードバック"), "振動フィードバックの節が無い")
+        for n in 1...3 {
+            XCTAssertTrue(app.staticTexts["振動パターン\(n)"].waitForExistence(timeout: 10),
+                          "振動パターン\(n) が無い")
+        }
+        dump(app, "device_haptic")
+
+        // パターン1 に 100m を割り当てる（既定は未設定）。
+        // メニュー形式のピッカーなので「セルを叩く → 出てきた選択肢を叩く」の2段。
+        let cell = app.cells.containing(.staticText, identifier: "振動パターン1").firstMatch
+        XCTAssertTrue(cell.waitForExistence(timeout: 10), "パターン1 の行が無い")
+        cell.tap()
+        let option = app.buttons["100m ごと"].firstMatch
+        XCTAssertTrue(option.waitForExistence(timeout: 10), "距離の選択肢が出ない")
+        option.tap()
+
+        let summary = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS '振動パターン1=100m'")).firstMatch
+        XCTAssertTrue(summary.waitForExistence(timeout: 10),
+                      "割り当てが要約に出ていない")
+
+        // 再起動しても残っている
+        app.terminate()
+        app.launch()
+        app.tabBars.buttons["デバイス"].tap()
+        scrollTo(app, "振動フィードバック")
+        XCTAssertTrue(app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS '振動パターン1=100m'"))
+            .firstMatch.waitForExistence(timeout: 20),
+            "振動の設定が保存されていない")
+    }
+
     func testStravaUploadScreenShowsPreview() {
         let app = makeApp()
         app.launch()

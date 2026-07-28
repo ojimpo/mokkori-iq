@@ -4,12 +4,36 @@ import SwiftUI
 struct MokkoriIQApp: App {
     @State private var store = SessionStore()
     @State private var strava = StravaService()
+    @State private var device = DeviceSettings()
 
     var body: some Scene {
         WindowGroup {
-            SessionListView()
+            RootView()
                 .environment(store)
                 .environment(strava)
+                .environment(device)
+        }
+    }
+}
+
+/// タブは2つだけ。**デバイス**＝本体まわり（取り込み・状態・メンテナンス・振動）、
+/// **ログ**＝取り込んだセッションの一覧とレポート。
+/// Strava の設定はログ側の左上に置く（設定するものが Strava しか無いため）。
+struct RootView: View {
+    /// 起動時はログを開く。デバイスタブは取り込むときと設定を変えるときに行く場所で、
+    /// 毎回見るものではない。
+    @State private var tab = Tab.log
+
+    enum Tab: Hashable { case device, log }
+
+    var body: some View {
+        TabView(selection: $tab) {
+            DeviceView()
+                .tabItem { Label("デバイス", systemImage: "sensor.tag.radiowaves.forward") }
+                .tag(Tab.device)
+            SessionListView()
+                .tabItem { Label("ログ", systemImage: "figure.pool.swim") }
+                .tag(Tab.log)
         }
     }
 }

@@ -52,10 +52,13 @@ app/MokkoriCore/     解析エンジン（Swift Package, iOS17+/macOS14+）
   MetricStyle      Apple フィットネス流の数値タイポグラフィ（アプリ側）
   StravaSummary    投稿内容の組み立て（Strava 投稿規約の実装）
 
-app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
+app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用・2タブ）
+  RootView              タブ（デバイス / ログ）。MokkoriIQApp.swift の中
+  DeviceSettings        振動フィードバックの設定（UserDefaults 永続化）
   SessionStore          永続化 Documents/sessions/<uuid>/{meta.json,raw.bin,overlay.json}
   SessionAnalysisModel  読込→自動検出→オーバーレイ適用→即時再計算
   StravaService         ゲートウェイ（strava.ojimpo.com）へ投稿
+  Views/DeviceView      デバイスタブ（取り込み・本体の状態・メンテナンス・振動）
   Views/                一覧 → レポート → ラップ確認 / Strava アップ / 設定
 ```
 
@@ -83,6 +86,20 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
 - 7/28: turns 41 / rests 1 / bigs 3 / 復元@533s / 625+425 = **1050m** / 42ラップ 576ストローク
 - 両セッションとも全インターバルで CROSS-CHECK 不発（min() が効かない）
 - セット番号が 1 からの連番（泳ぎゼロのブロックが番号を食わない）
+
+## 画面構成（2タブ）
+
+**デバイス**（本体まわり）と**ログ**（一覧→レポート）。起動時はログ。Strava の設定は
+設定するものがそれしか無いのでログ画面の左上のまま。
+
+デバイスタブで**いま実際に動くのは「ログを取り込む」と「振動の設定（保存だけ）」の2つ**。
+バッテリー・メモリー・時刻合わせ・メモリー消去は本体と話す必要があるので、
+**「未接続」と画面に出したうえで操作を無効にしてある**（黙って空欄にしない）。
+BLE が入ったら `DeviceStatus` を埋めてボタンを有効にするだけで済む形にしてある。
+
+振動は **3パターン固定 × 発動距離の割り当て**（未設定なら鳴らない）。
+「1000m 連続」以外の使い方にも効くようにこの形にした。**まだ鳴らない**: 実機に
+振動モーターが載っておらず、BLE で送る仕組みも無いため。
 
 ## すぐやれる残作業（優先度順）
 
