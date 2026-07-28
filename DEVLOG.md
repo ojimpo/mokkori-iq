@@ -186,3 +186,15 @@ Cosense「mokkori-iq 進捗ログ」のミラー。時刻は JST（ツール実�
 - アプリ側: `StravaService` を OAuth 実装からゲートウェイ呼び出しへ全面書き換え、設定画面もゲートウェイ URL + API キー入力に変更。
   アプリ内 OAuth が無くなったのでカスタム URL スキーム登録も撤去。ビルド成功
 - **ユーザー作業は「アプリの設定画面に API キーを入れる」だけになった**（Strava 側の新規登録は不要）
+
+### 19:05 health-ojimpo も同じ構造に寄せて、トークン共有の脆さを解消（別リポジトリ）
+- 上で見つけた「autopilot と health-ojimpo が Strava トークンをコピー共有し、**両方が独立にリフレッシュしている**」問題を、ユーザー判断でその場で解消
+- health-ojimpo は Strava を**読むだけ**（`GET /athlete/activities`）と判明 → 書き込みゲートウェイでは足りないので、autopilot に **`GET /api/gateway/token`**（有効なアクセストークンを配る。期限が近ければあちら側でリフレッシュ）を追加
+- health-ojimpo 側の変更（コミット d10fc15、GitHub へ push 済み）:
+  - `sources/strava.py`: `_get_access_token()` がゲートウェイからトークンを取得。**ゲートウェイ未設定ならローカルトークンにフォールバック**（後方互換）
+  - `services/source_health.py`: **ここが盲点だった**。ヘルスチェックが `get_valid_token` を副作用込み（期限切れならリフレッシュ）で呼んでいたので、アダプタだけ直してもヘルスチェックがトークンをローテーションさせてしまう。strava だけゲートウェイに委譲するよう `_check_token()` を新設
+  - `is_configured()` はゲートウェイ設定済みなら True
+- **検証**: ゲートウェイ経由でトークン取得 OK → `fetch_and_store()` で **53 件取得・保存成功**。ヘルスレポートも strava/gcal/spotify すべて ok。エラーログなし
+- 残った注意点（両方の CLAUDE.md に明記）: health 側に `/api/oauth/strava` の再認可フローがコード上残っており、**そこから再認可すると系統が枝分かれして autopilot を壊しうる**。Strava の再認可は autopilot 側で行うこと
+- 訂正: 「NAS に Claude Code が入っていない」と報告したが**誤り**。非対話 ssh で PATH が通っていなかっただけで、`~/.local/bin/claude` に 2.1.197 が入っている（ユーザー指摘）
+- **strava-autopilot はローカルリポジトリで git remote が無い**ため push できず、コミットのみ（3f89f72 / 19aab68）

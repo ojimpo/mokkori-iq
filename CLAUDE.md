@@ -356,9 +356,10 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   - アプリが持つのは**ゲートウェイ URL と API キーのみ**（Keychain 保存）。API キーは NAS の
     `~/dev/strava-autopilot/.env` の `GATEWAY_API_KEY`。ゲートウェイは公開 URL なので Tailscale 不要。
   - ゲートウェイ側の仕様・注意点は `strava-autopilot` の CLAUDE.md「Strava ゲートウェイ」節に記載。
-  - 既知の注意: `health-ojimpo` も同じ `STRAVA_CLIENT_ID/SECRET` を使い、トークンの `expires_at` が autopilot と
-    一致している（＝同じトークンをコピー共有）。両者が独立にリフレッシュすると片方が無効化されうるので、
-    将来は health 側もゲートウェイ経由へ寄せるのが安全。
+  - `health-ojimpo` も同じ client を共有していたが、**2026-07-28 にゲートウェイ経由へ移行済み**
+    （`GET /api/gateway/token` でトークンを借りる）。これで**リフレッシュするのは autopilot だけ**になった。
+  - **Strava の再認可は autopilot 側（`/api/oauth`）で行うこと。** 他アプリから再認可すると新しい認可が
+    発行されてトークン系統が枝分かれし、既存アプリを壊しうる。
 - 手動アクティビティの旧経路（Mac から curl / Python で autopilot のトークンを「使うだけ・refresh しない」）は
   緊急時のフォールバックとして残すが、通常はアプリから投稿する。
 - 注意: アカウントの既定公開範囲が `everyone`。非公開にしたいセッションは投稿後に Strava 側で変更する。
