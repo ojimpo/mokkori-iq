@@ -39,45 +39,46 @@ public struct RawRecording {
         (x * scale).rounded(.toNearestOrEven) / scale
     }
 
+    public static func encode(csvText: String) throws -> RawRecording {
+        try encode(csvData: Data(csvText.utf8))
+    }
+
     /// flash_dump CSV → int16。各値が round5(raw*感度) に戻ることを検証する
     /// （戻らない CSV は形式が違うので呼び出し側が CSV のまま保存する）。
-    public static func encode(csvText: String) throws -> RawRecording {
+    public static func encode(csvData: Data) throws -> RawRecording {
+        let head = String(decoding: csvData.prefix(64), as: UTF8.self)
+        guard head.hasPrefix(SwimSession.csvHeaderPrefix) else {
+            throw CodecError.timeGrid(row: 0)   // 別形式 → 呼び出し側は CSV のまま保存
+        }
         var samples = [Int16]()
         var odr = 0.0
-        var row = -1               // データ行番号 (0-based)
         var err: CodecError?
-        var t1 = Double.nan
-        csvText.enumerateLines { line, stop in
-            if row < 0 && line.hasPrefix("idx") { row = 0; return }
-            if line.isEmpty { return }
-            let f = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard f.count == 8 else { err = .timeGrid(row: row); stop = true; return }
-            let tv = Double(f[1]) ?? .nan
-            if row == 1 {
-                t1 = tv
-                odr = (1.0 / t1).rounded()
-            }
+
+        let ok = FastCSV.scan(csvData, columns: 8) { row, f in
+            let tv = f[1]
+            if row == 1 { odr = (1.0 / tv).rounded() }
             if row >= 1 {
-                // t = round4(i / odr) の検証（0.5e-4 は %.4f 丸め幅）
+                // t = round4(i / odr) の検証（0.51e-4 は %.4f 丸め幅）
                 if abs(tv - Double(row) / odr) > 0.51e-4 {
-                    err = .timeGrid(row: row); stop = true; return
+                    err = .timeGrid(row: row)
+                    return false
                 }
             }
             for c in 0..<6 {
                 let sens = c < 3 ? accSens : gyroSens
-                guard let v = Double(f[c + 2]) else {
-                    err = .quantization(row: row, column: c); stop = true; return
-                }
+                let v = f[c + 2]
                 let raw = (v / sens).rounded()
                 guard raw >= -32768, raw <= 32767,
                       abs(roundDec(raw * sens, 1e5) - v) < 1e-9 else {
-                    err = .quantization(row: row, column: c); stop = true; return
+                    err = .quantization(row: row, column: c)
+                    return false
                 }
                 samples.append(Int16(raw))
             }
-            row += 1
+            return true
         }
         if let err { throw err }
+        if !ok { throw CodecError.timeGrid(row: samples.count / 6) }
         if samples.count / 6 == 1 { odr = 52.0 }   // 1行だけ: t1 が無い
         return RawRecording(samples: samples, odr: odr)
     }

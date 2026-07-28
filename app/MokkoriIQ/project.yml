@@ -10,6 +10,18 @@ packages:
   MokkoriCore:
     path: ../MokkoriCore
 targets:
+  MokkoriIQUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: MokkoriIQ
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ojimpo.mokkori-iq.uitests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: MokkoriIQ
   MokkoriIQ:
     type: application
     platform: iOS

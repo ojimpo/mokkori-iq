@@ -33,6 +33,28 @@ final class RoundTripTests: XCTestCase {
         XCTAssertEqual(fromBin.gz, fromCSV.gz)
     }
 
+    /// 高速パーサに置き換えても、想定外の CSV を黙って読まないこと。
+    /// 列数だけ合う別物を通すと、意味のない解析結果が「セッション」として保存される。
+    func testRejectsForeignCSV() {
+        let foreign = """
+        time,lat,lon,ele,hr,cad,pow,temp
+        0,35.6,139.7,10,120,80,200,25
+        1,35.6,139.7,11,121,81,201,25
+        """
+        XCTAssertThrowsError(try SwimSession.parseCSV(foreign), "別形式の CSV が通ってしまう")
+        XCTAssertThrowsError(try RawRecording.encode(csvText: foreign))
+
+        XCTAssertThrowsError(try SwimSession.parseCSV("")) { e in
+            guard case SwimSession.LoadError.badHeader = e else {
+                return XCTFail("空データは badHeader: \(e)")
+            }
+        }
+
+        // ヘッダは正しいが行が壊れている場合
+        let broken = "idx,t,ax,ay,az,gx,gy,gz\n0,0.0,0.1,0.2,0.3\n"
+        XCTAssertThrowsError(try SwimSession.parseCSV(broken))
+    }
+
     func testOverlayAddRemove() throws {
         let url = ParityTests.dataDir().appendingPathComponent("swim_20260728_153415.csv")
         guard FileManager.default.fileExists(atPath: url.path) else {

@@ -67,7 +67,7 @@ struct SessionDetailView: View {
                     HStack {
                         Text("半\(h.index)")
                         Spacer()
-                        Text("\(Int(h.distance))m")
+                        Text(fmtMeters(h.distance))
                             .monospacedDigit()
                         Text(fmtTime(h.movingTime))
                             .monospacedDigit()
@@ -136,7 +136,7 @@ struct SessionDetailView: View {
     private func summaryGrid(_ report: SwimReport) -> some View {
         VStack(spacing: 12) {
             HStack {
-                stat("距離", "\(Int(report.distance)) m")
+                stat("距離", fmtMeters(report.distance))
                 stat("ペース", "約" + fmtTime(report.pace100) + " /100m")
             }
             HStack {

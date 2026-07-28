@@ -77,7 +77,8 @@ final class SessionStore {
     private func processCSV(from url: URL) throws -> Meta {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+        // Data のまま扱う（String 経由にすると 16 万行で無駄なコピーと変換が入る）
+        guard let data = try? Data(contentsOf: url) else {
             throw ImportError.unreadable
         }
 
@@ -85,12 +86,14 @@ final class SessionStore {
         var storage = "bin"
         var rec: RawRecording?
         do {
-            let r = try RawRecording.encode(csvText: text)
+            let r = try RawRecording.encode(csvData: data)
             rec = r
             sess = r.decode()
         } catch {
-            storage = "csv"                    // 想定外の形式: 原文のまま保存
-            sess = try SwimSession.parseCSV(text)
+            // int16 に丸め直せない形式（記録側の変更など）。解析できるなら
+            // CSV のまま保存して取り込む。ヘッダ違いはここで弾かれる。
+            storage = "csv"
+            sess = try SwimSession.parseCSV(data)
         }
 
         let d = WallDetector.detectWalls(sess)
@@ -113,8 +116,7 @@ final class SessionStore {
         if let rec {
             try rec.binaryData().write(to: d0.appendingPathComponent("raw.bin"))
         } else {
-            try text.write(to: d0.appendingPathComponent("raw.csv"),
-                           atomically: true, encoding: .utf8)
+            try data.write(to: d0.appendingPathComponent("raw.csv"))
         }
         try writeMeta(meta)
         return meta

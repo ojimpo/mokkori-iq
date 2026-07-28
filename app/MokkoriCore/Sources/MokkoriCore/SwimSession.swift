@@ -13,6 +13,8 @@ public struct SwimSession {
 
     public static let g0 = 9.80665
     public static let deg2rad = Double.pi / 180.0
+    /// flash_dump save_csv が書くヘッダ（`idx,t,ax,ay,az,gx,gy,gz`）
+    public static let csvHeaderPrefix = "idx,t,ax"
 
     public init(t: [Double], ax: [Double], ay: [Double], az: [Double],
                 gx: [Double], gy: [Double], gz: [Double], fs: Double) {
@@ -37,46 +39,33 @@ public struct SwimSession {
     }
 
     public static func loadCSV(_ url: URL) throws -> SwimSession {
-        let text = try String(contentsOf: url, encoding: .utf8)
-        return try parseCSV(text)
+        try parseCSV(try Data(contentsOf: url))
+    }
+
+    public static func parseCSV(_ text: String) throws -> SwimSession {
+        try parseCSV(Data(text.utf8))
     }
 
     /// dataio.load_swim_csv(to_si=True) と同一: 単位変換し、fs は t の
     /// 差分中央値から推定（差分が取れなければ 52 Hz）。
-    public static func parseCSV(_ text: String) throws -> SwimSession {
+    public static func parseCSV(_ data: Data) throws -> SwimSession {
+        // 列数だけ合う別物の CSV を黙って読まないよう、ヘッダは必ず確かめる
+        let head = String(decoding: data.prefix(64), as: UTF8.self)
+        guard head.hasPrefix(csvHeaderPrefix) else {
+            throw LoadError.badHeader(head.split(separator: "\n").first.map(String.init) ?? "")
+        }
+
         var t: [Double] = []
         var ax: [Double] = [], ay: [Double] = [], az: [Double] = []
         var gx: [Double] = [], gy: [Double] = [], gz: [Double] = []
 
-        var first = true
-        var lineNo = 0
-        var err: LoadError?
-        text.enumerateLines { line, stop in
-            lineNo += 1
-            if first {
-                first = false
-                if !line.hasPrefix("idx,t,ax") {
-                    err = .badHeader(line)
-                    stop = true
-                }
-                return
-            }
-            if line.isEmpty { return }
-            let f = line.split(separator: ",", omittingEmptySubsequences: false)
-            guard f.count == 8,
-                  let tv = Double(f[1]),
-                  let axv = Double(f[2]), let ayv = Double(f[3]), let azv = Double(f[4]),
-                  let gxv = Double(f[5]), let gyv = Double(f[6]), let gzv = Double(f[7])
-            else {
-                err = .badRow(line: lineNo)
-                stop = true
-                return
-            }
-            t.append(tv)
-            ax.append(axv * g0); ay.append(ayv * g0); az.append(azv * g0)
-            gx.append(gxv * deg2rad); gy.append(gyv * deg2rad); gz.append(gzv * deg2rad)
+        let ok = FastCSV.scan(data, columns: 8) { _, f in
+            t.append(f[1])
+            ax.append(f[2] * g0); ay.append(f[3] * g0); az.append(f[4] * g0)
+            gx.append(f[5] * deg2rad); gy.append(f[6] * deg2rad); gz.append(f[7] * deg2rad)
+            return true
         }
-        if let err { throw err }
+        guard ok else { throw LoadError.badRow(line: t.count + 2) }  // ヘッダ + 読めた行数
         guard !t.isEmpty else { throw LoadError.empty }
 
         var fs = 52.0

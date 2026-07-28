@@ -20,6 +20,10 @@
 # 解析コアのテスト（Xcode 不要。Mac の CLI だけで回る。検出器を触ったら必ず）
 cd app/MokkoriCore && swift test
 
+# 画面のテスト（シミュレータを実際に操作する。UI を触ったら必ず）
+cd app/MokkoriIQ && xcodegen && xcodebuild -project MokkoriIQ.xcodeproj -scheme MokkoriIQ \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:MokkoriIQUITests test
+
 # Python 側リファレンスの回帰（Python を触ったら必ず。両方 green にすること）
 .venv/bin/python analysis/regression_check.py
 
@@ -69,13 +73,15 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
 ## すぐやれる残作業（優先度順）
 
 1. **実機 iPhone で動かす**（無料 Apple ID で可・7日で再署名）。シミュレータ限定の
-   確認しかしていない。
+   確認しかしていない。**画面の描画・遷移・壁編集の再計算は UI テストで自動確認済み**なので、
+   実機で見るのは「実際の指の操作感」と「取込の体感速度」。
 2. **Strava に実投稿してみる**。設定画面に API キーを入れるだけで投稿できる状態
    （キー: `ssh arigato-nas 'grep GATEWAY_API_KEY ~/dev/strava-autopilot/.env'`）。
    疎通・トークン・Strava 到達・エラー伝搬までは検証済みだが、**実際にアクティビティを
    作るところだけ未検証**（ゴミ投稿を避けたため）。
-3. **CSV インポートの実地確認**。シミュレータではコンテナに直接ファイルを置いて
-   確認した。「ファイル」アプリ経由の `fileImporter` 経路は未実行。
+3. **CSV インポートの実地確認**。UI テストは環境変数 `UITEST_SEED_CSV` でパスを渡して
+   取り込ませている（アプリ側に種まきフックあり）。「ファイル」アプリを人が操作する
+   `fileImporter` 経路だけは未実行。
 4. Phase C（ファーム時刻アンカー + `TIMES`）。これが入ると手動アンカー入力が不要になる。
 
 ## 手を付けていない設計判断
@@ -88,6 +94,14 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
 - 壁インターバル画面の**壁追加はギャップ中点固定**。任意の時刻を指定したくなったら
   波形を出して指でつまむ UI が要る（現状は「この前のギャップに壁を追加」のみ）。
 
+## UI テストの仕組み（画面を触る作業を自動化してある）
+
+`app/MokkoriIQ/UITests/ScreenFlowTests.swift` がシミュレータを実際に操作する。
+セッションは `UITEST_SEED_CSV` に `data/swim/*.csv` のパスを渡して取り込ませる
+（`SessionListView` の `.task` に種まきフックがあり、**環境変数があるときだけ**動く）。
+検証しているのは「レポートの主要な数値が出る」「壁インターバル表が出る」
+「壁を1つ消すと距離が 25m 減り、破棄すると戻る」「ゲートウェイ未設定なら投稿ボタンが押せない」。
+
 ## 落とし穴メモ
 
 - `Section("タイトル") { } footer: { }` という初期化子は SwiftUI に無い。
@@ -96,3 +110,8 @@ app/MokkoriIQ/       iOS アプリ（SwiftUI, iPhone 専用）
   差し替わって理由が消える**。エラーは 4xx で返す（autopilot 側は 422 にしてある）。
 - `.xcodeproj` と `Sources/Info.plist` は XcodeGen の生成物なのでコミットしない。
   設定を変えるときは `project.yml` を編集する。
+- **距離の表示は必ず `fmtMeters()` を通す**。SwiftUI の `Text("\(Int(x)) m")` は
+  LocalizedStringKey 扱いでロケールの桁区切りが入るが、`String` 変数に入れてから渡すと
+  入らない。同じ数値が画面によって `1050 m` と `1,050 m` になっていた（2026-07-28 に統一）。
+- CSV の読み取りは `FastCSV`（strtod）。`String.enumerateLines` + `Double(Substring)` に
+  戻すと 16 万行で 2.3 秒（実機ではその数倍）かかる。

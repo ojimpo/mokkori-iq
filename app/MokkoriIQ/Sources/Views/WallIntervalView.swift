@@ -15,7 +15,7 @@ struct WallIntervalView: View {
             if let report = model.report {
                 Section {
                     HStack {
-                        Text("\(Int(report.distance)) m")
+                        Text(fmtMeters(report.distance))
                             .font(.title2.weight(.semibold))
                             .monospacedDigit()
                         Spacer()

@@ -205,3 +205,26 @@ Cosense「mokkori-iq 進捗ログ」のミラー。時刻は JST（ツール実�
 - `gh repo create ojimpo/strava-autopilot --public` で作成・push。About は英語、topics は strava / strava-api / fastapi / self-hosted / cycling / automation / oauth2
 - health-ojimpo の残課題（`/api/oauth/strava` の再認可ルートをどうするか）を **Todoist にタスク化**（p3。選択肢 A/B/C と背景つき）
 - **`docs/app_handoff.md` を新設**: 別セッションでアプリ開発を続けるための引き継ぎ（30秒でわかる現状表・起動コマンド・ファイル構成・移植で守る数値ルール・残作業の優先順・未着手の設計判断・落とし穴）。CLAUDE.md からも参照させた
+
+### 19:50 実機なしで進められる分: 取込 75倍高速化 + 画面の自動テスト
+実機が繋げない状況だったので、実機確認の前に潰しておくべきものをやった。
+
+- **段階ごとに時間を測ったら、遅いのは解析ではなく CSV 読み取りだった**（`PerformanceTests` を追加）。
+  16万行のセッションで **CSV パース 2.32s / int16 エンコード 2.32s に対し、検出は 0.03s・レポートは 0.01s**。
+  つまり取込の待ち時間はほぼ全部パースで、iPhone ではこの数倍待たされる計算だった
+- **`FastCSV` を新設**（`String.enumerateLines` + `split` + `Double(Substring)` をやめ、
+  バイト列を `strtod` で直接読む）。**2.32s → 0.03s（約75倍）**。`strtod` は Swift の `Double(String)` と
+  同じく正しく丸めるので数値は完全に同一で、バイナリ往復テストがビット単位で保証している
+  - `SessionStore` も `String` 経由をやめて `Data` のまま扱うようにした（16万行で無駄なコピーが消える）
+  - **副作用の潰し込み**: 高速化のついでにヘッダ検証が抜けていたので復活させ、
+    「列数だけ合う別物の CSV を黙って読まない」ことをテスト（`testRejectsForeignCSV`）で固定した
+- **UI テスト（XCUITest）を追加**。osascript の補助アクセスが無くシミュレータを手で操作できず、
+  3画面とも一度も表示確認できていなかったのを自動化。`UITEST_SEED_CSV` に CSV のパスを渡すと
+  取り込む種まきフックを `SessionListView` に置いた（**環境変数があるときだけ動く**）
+  - 検証内容: レポートの主要数値が出る / 本ごとセクションが出る / 壁インターバル表が出る /
+    **壁を1つ消すと距離が 25m 減り、修正を破棄すると戻る** / ゲートウェイ未設定なら投稿ボタンが押せない
+  - **3画面とも正しく描画されていることを初めて確認**（＝実機で見るのは操作感と体感速度だけになった）
+- **UI テストが実バグを1つ見つけた**: 同じ距離が画面によって `1050 m` と `1,050 m` で**表示揺れ**していた。
+  SwiftUI の `Text("\(Int(x)) m")` は LocalizedStringKey 扱いでロケールの桁区切りが入るが、
+  `String` 変数に入れてから渡すと入らない、という差。`fmtMeters()` を新設して全画面を通した
+- 落とし穴を handoff メモに追記（距離表示は必ず `fmtMeters()`、CSV 読みは `FastCSV` から戻さない）

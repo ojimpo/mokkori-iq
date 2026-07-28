@@ -58,7 +58,7 @@ struct StravaUploadView: View {
                     TextField("アクティビティ名", text: $name)
                     LabeledContent("開始時刻", value: summary.startLocal
                         .formatted(date: .abbreviated, time: .standard))
-                    LabeledContent("距離", value: "\(Int(summary.distanceMeters)) m")
+                    LabeledContent("距離", value: fmtMeters(summary.distanceMeters))
                     LabeledContent("表示時間", value: fmtTime(Double(summary.movingSeconds)))
                     Text(summary.description)
                         .font(.caption)

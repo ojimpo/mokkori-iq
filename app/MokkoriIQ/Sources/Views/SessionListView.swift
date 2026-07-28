@@ -54,6 +54,16 @@ struct SessionListView: View {
                     }
                 }
             }
+            .task {
+                // UI テスト用の種まき。環境変数で CSV のパスを渡されたときだけ動く
+                // （テストのたびに「ファイル」アプリを人手で操作しなくて済む）。
+                guard store.sessions.isEmpty,
+                      let path = ProcessInfo.processInfo.environment["UITEST_SEED_CSV"]
+                else { return }
+                importing = true
+                _ = try? await store.importCSV(from: URL(fileURLWithPath: path))
+                importing = false
+            }
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: [.commaSeparatedText, .plainText]) { res in
                 guard case .success(let url) = res else { return }
@@ -87,7 +97,7 @@ private struct SessionRow: View {
                 .font(.headline)
                 .lineLimit(1)
             HStack(spacing: 12) {
-                Label("\(Int(meta.distance))m", systemImage: "ruler")
+                Label(fmtMeters(meta.distance), systemImage: "ruler")
                 Label(fmtTime(meta.movingTime), systemImage: "stopwatch")
                 Text("\(Int(meta.elapsed / 60))分記録")
                     .foregroundStyle(.secondary)
