@@ -14,19 +14,22 @@
  * talking to us, and resumes on disconnect. See "BLE" below.
  *
  * Storage is append-only; the flash is cleared ONLY by an explicit ERASE, so
- * unplugging to swim again never destroys data. Samples are raw int16 sensor
- * counts packed into 256-byte pages:
- *     [0:2] magic 0xA55A   [2:4] sample count (1..20)   [4:6] page seq
- *     [6:8] reserved       [8:248] 20 samples x (ax,ay,az,gx,gy,gz) int16 LE
+ * unplugging to swim again never destroys data. Samples are compressed into
+ * 1 KB self-contained records (delta + Rice, low 2 bits dropped) -- see
+ * log_codec.h for the format and why. That takes 53 minutes of recording time
+ * to over two hours, which is what a public pool's 2-hour slot needs.
+ * Legacy raw pages (magic 0xA55A, 20 samples) are still read, so updating the
+ * firmware doesn't force an erase.
  * Time anchors are appended to the same stream as their own page kind so the
  * host can turn sample indices into absolute time (the nRF52 has no RTC across
  * a power cycle, so the phone hands us the clock):
  *     [0:2] magic 0xA55B   [2:4] count = 0   [4:6] page seq   [6:8] reserved
  *     [8:16] epoch_ms uint64 LE   [16:20] sample index uint32 LE
  *     [20:24] millis() uint32 LE
- * The log ends at the first page whose magic is neither of those (erased flash
- * reads 0xFFFF). Host-side tools/flash_dump.py pulls the stream and converts
- * the raw counts to g / deg-per-second.
+ * The log ends at the first page whose magic is none of those (erased flash
+ * reads 0xFFFF). **Compression is invisible off-device**: DUMP and the BLE
+ * data characteristic both decode first and emit the same raw int16 stream
+ * they always did, so tools/flash_dump.py and the phone app are unchanged.
  *
  * Console commands (newline-terminated, CONSOLE mode):
  *   INFO            print header + recorded sample/page count + duration
@@ -44,6 +47,7 @@
 #include <Adafruit_SPIFlash.h>
 #include <bluefruit.h>
 #include "log_format.h"
+#include "log_codec.h"
 
 // ---- sensor configuration (kept in sync with the on-flash data) -----------
 static const uint16_t ODR_HZ      = 52;      // sample rate
@@ -175,9 +179,10 @@ static void led(bool r, bool g, bool b) {
 }
 
 // --- scan the log: count valid pages / samples and the next free address ----
-// End of log = first page whose magic isn't one of ours (erased = 0xFFFF).
-// Partial pages (count < 20) are allowed mid-log so sessions can be appended,
-// and anchor pages (0xA55B) carry no samples but still consume a page.
+// End of log = first record whose magic isn't one of ours (erased = 0xFFFF).
+// Records vary in length now (compressed ones are MK_UNITS pages, anchors and
+// legacy raw pages are one), so the header says how far to step. `pages` counts
+// 256-byte units, which is what the free-space arithmetic wants.
 static void scan_log_raw(uint32_t *out_pages, uint32_t *out_samples,
                          uint32_t *out_end, Anchor *out_last, uint32_t *out_anchors) {
   uint32_t addr = 0, pages = 0, samples = 0, anchors = 0, size = flash.size();
@@ -187,6 +192,7 @@ static void scan_log_raw(uint32_t *out_pages, uint32_t *out_samples,
     uint16_t magic, count;
     memcpy(&magic, hdr, 2);
     memcpy(&count, hdr + 2, 2);
+    uint32_t step = PAGE_SIZE;
     if (magic == ANCHOR_MAGIC) {
       anchors++;
       if (out_last) {
@@ -197,11 +203,16 @@ static void scan_log_raw(uint32_t *out_pages, uint32_t *out_samples,
     } else if (magic == PAGE_MAGIC) {
       if (count == 0 || count > SAMPLES_PER_PAGE) break;   // corrupt -> stop
       samples += count;
+    } else if (magic == MK_MAGIC_RICE) {
+      if (count == 0 || count > MK_MAX_SAMPLES) break;     // corrupt -> stop
+      step = (uint32_t)mk_record_units(hdr) * MK_UNIT;
+      samples += count;
     } else {
       break;                                     // erased / end of log
     }
-    pages++;
-    addr += PAGE_SIZE;
+    if (addr + step > size) break;
+    pages += step / PAGE_SIZE;
+    addr += step;
   }
   if (out_pages) *out_pages = pages;
   if (out_samples) *out_samples = samples;
@@ -238,9 +249,20 @@ static void scan_log(uint32_t *out_pages, uint32_t *out_samples,
 }
 
 // How many samples fit in the flash, for the phone's "recordable time" gauge.
+// Compression makes this data-dependent -- swimming costs about 6.3 B/sample,
+// changing and resting about 4.4 -- so instead of guessing a margin, report
+// what this device has actually been achieving, extrapolated over the free
+// space. The phone's gauge then tracks reality without either side hardcoding
+// a compression ratio.
+static const float BYTES_PER_SAMPLE_GUESS = 5.5f;   // the two captured sessions
+
 static uint32_t capacity_samples() {
-  uint32_t size = flash.size();
-  return (size / PAGE_SIZE) * SAMPLES_PER_PAGE;
+  uint32_t samples, end, size = flash.size();
+  scan_log(NULL, &samples, &end, NULL, NULL);
+  float bps = BYTES_PER_SAMPLE_GUESS;
+  if (samples > 2000 && end > 0) bps = (float)end / (float)samples;
+  uint32_t freeb = (end < size) ? (size - end) : 0;
+  return samples + (uint32_t)((float)freeb / bps);
 }
 
 // --- time anchors -----------------------------------------------------------
@@ -270,14 +292,14 @@ static bool append_anchor(uint64_t epoch_ms) {
 }
 
 static void print_times() {
-  uint32_t addr = 0, size = flash.size();
+  uint32_t addr = 0, end = 0;
+  scan_log(NULL, NULL, &end, NULL, NULL);
   uint8_t hdr[24];
   uint32_t n = 0;
-  while (addr + PAGE_SIZE <= size) {
+  while (addr < end) {
     flash.readBuffer(addr, hdr, sizeof(hdr));
-    uint16_t magic, count;
+    uint16_t magic;
     memcpy(&magic, hdr, 2);
-    memcpy(&count, hdr + 2, 2);
     if (magic == ANCHOR_MAGIC) {
       uint64_t epoch;
       uint32_t idx, ms;
@@ -293,20 +315,18 @@ static void print_times() {
       Serial.print(" sample_index="); Serial.print(idx);
       Serial.print(" millis="); Serial.println(ms);
       n++;
-    } else if (magic != PAGE_MAGIC || count == 0 || count > SAMPLES_PER_PAGE) {
-      break;
     }
-    addr += PAGE_SIZE;
+    addr += (uint32_t)mk_record_units(hdr) * MK_UNIT;
   }
   Serial.print("# anchors="); Serial.println(n);
   Serial.println("OK");
 }
 
 static void print_info() {
-  uint32_t pages, samples, anchors;
-  scan_log(&pages, &samples, NULL, NULL, &anchors);
+  uint32_t pages, samples, anchors, end;
+  scan_log(&pages, &samples, &end, NULL, &anchors);
   float secs = (float)samples / (float)ODR_HZ;
-  Serial.println("# mokkori flash logger v2");
+  Serial.println("# mokkori flash logger v3 (compressed)");
   Serial.print("# odr_hz="); Serial.print(ODR_HZ);
   Serial.print(" accel_fs_g="); Serial.print(ACCEL_FS_G);
   Serial.print(" gyro_fs_dps="); Serial.println(GYRO_FS_DPS);
@@ -318,6 +338,12 @@ static void print_info() {
   Serial.print(" capacity="); Serial.print(capacity_samples());
   Serial.print(" anchors="); Serial.print(anchors);
   Serial.print(" seconds="); Serial.println(secs, 1);
+  // The achieved density is the honest answer to "how much longer can I
+  // record" -- it depends on how much of the log is swimming.
+  Serial.print("# bytes_per_sample=");
+  Serial.print(samples ? (float)end / (float)samples : 0.0f, 2);
+  Serial.print(" recordable_min=");
+  Serial.println((float)capacity_samples() / (float)ODR_HZ / 60.0f, 0);
   uint16_t mv = read_vbat_mv();
   Serial.print("# vbat_mv="); Serial.print(mv);
   Serial.print(" pct="); Serial.print(vbat_pct(mv));
@@ -325,31 +351,46 @@ static void print_info() {
   Serial.println("OK");
 }
 
+// --- read one record off the flash and decode it ---------------------------
+// Shared by both dump paths (USB and BLE): they never run at the same time,
+// since a connected central takes over the device. Static because 5 KB of
+// buffers has no business on the stack.
+static uint8_t g_rec[MK_REC_BYTES];
+static int16_t g_dec[MK_MAX_SAMPLES * MK_AXES];
+
+// Returns how many samples landed in g_dec (0 for anchors) and advances *addr
+// past the record. The header's length field is read first so we only fetch
+// what the record actually occupies.
+static uint16_t read_record(uint32_t *addr) {
+  flash.readBuffer(*addr, g_rec, MK_UNIT);
+  uint32_t bytes = (uint32_t)mk_record_units(g_rec) * MK_UNIT;
+  if (bytes > MK_REC_BYTES) bytes = MK_REC_BYTES;              // corrupt header
+  if (bytes > MK_UNIT) flash.readBuffer(*addr + MK_UNIT, g_rec + MK_UNIT, bytes - MK_UNIT);
+  *addr += bytes;
+  return mk_decode_record(g_rec, g_dec, MK_MAX_SAMPLES);
+}
+
 // --- stream the recorded samples as raw bytes ------------------------------
 // Protocol:  "DUMP_BEGIN <nsamples> 12\n" then nsamples*12 raw bytes then
 //            "\nDUMP_END\n".  Each sample = ax,ay,az,gx,gy,gz int16 LE.
-// Anchor pages carry no samples, so they simply contribute nothing here and
-// the byte stream stays exactly what the existing host tools expect.
+// We decode here rather than shipping compressed records, so the host tools and
+// the phone app see exactly the stream they always did -- one decoder (in C,
+// tested by tools/codec_check.py) instead of three.
 static void dump_log() {
-  uint32_t pages, samples;
-  scan_log(&pages, &samples, NULL, NULL, NULL);
+  uint32_t samples, end;
+  scan_log(NULL, &samples, &end, NULL, NULL);
   Serial.print("DUMP_BEGIN ");
   Serial.print(samples);
   Serial.println(" 12");
   Serial.flush();
 
-  uint8_t page[PAGE_SIZE];
   uint32_t addr = 0;
-  for (uint32_t p = 0; p < pages; p++) {
-    flash.readBuffer(addr, page, PAGE_SIZE);
-    uint16_t magic, count;
-    memcpy(&magic, page, 2);
-    memcpy(&count, page + 2, 2);
-    if (magic != PAGE_MAGIC) { addr += PAGE_SIZE; continue; }   // anchor page
-    if (count > SAMPLES_PER_PAGE) count = SAMPLES_PER_PAGE;
-    Serial.write(page + 8, (size_t)count * 12);
-    Serial.flush();
-    addr += PAGE_SIZE;
+  while (addr < end) {
+    uint16_t n = read_record(&addr);
+    if (n) {
+      Serial.write((const uint8_t *)g_dec, (size_t)n * 12);
+      Serial.flush();
+    }
   }
   Serial.println();
   Serial.println("DUMP_END");
@@ -419,16 +460,14 @@ static volatile bool     g_req_anchor = false;
 static volatile uint64_t g_req_anchor_epoch = 0;
 static bool g_erasing = false;
 
-// Dump-over-BLE state machine (driven from loop(), one page at a time).
+// Dump-over-BLE state machine (driven from loop(), one record at a time).
 static bool     g_dump_active = false;
-static uint32_t g_dump_page = 0;       // page cursor
-static uint32_t g_dump_pages = 0;      // pages in the log when the dump started
+static uint32_t g_dump_addr = 0;       // flash cursor
+static uint32_t g_dump_end = 0;        // end of log when the dump started
 static uint32_t g_dump_abs = 0;        // absolute index of the next sample
-static uint16_t g_dump_off = 0;        // sample offset inside the cached page
-static uint16_t g_dump_have = 0;       // samples cached from the current page
+static uint16_t g_dump_off = 0;        // sample offset inside the decoded record
+static uint16_t g_dump_have = 0;       // samples decoded from the current record
 static uint32_t g_dump_skip_to = 0;    // resume point (absolute sample index)
-static uint8_t  g_dump_page_buf[PAGE_SIZE];
-static bool     g_dump_page_valid = false;
 static uint8_t  g_frame_samples = 15;  // recomputed from the negotiated MTU
 
 static uint16_t g_conn = BLE_CONN_HANDLE_INVALID;
@@ -566,12 +605,11 @@ static void control_write_cb(uint16_t conn_hdl, BLECharacteristic *chr,
       uint32_t from = 0;
       if (len >= 5) memcpy(&from, data + 1, 4);
       update_frame_size();
-      scan_log(&g_dump_pages, NULL, NULL, NULL, NULL);
-      g_dump_page = 0;
+      scan_log(NULL, NULL, &g_dump_end, NULL, NULL);
+      g_dump_addr = 0;
       g_dump_abs = 0;
       g_dump_off = 0;
       g_dump_have = 0;
-      g_dump_page_valid = false;
       g_dump_skip_to = from;
       g_dump_active = true;
       break;
@@ -601,21 +639,13 @@ static void dump_step() {
 
   uint8_t frame[4 + SAMPLES_PER_PAGE * 12];
   for (int budget = 0; budget < 12; budget++) {
-    if (g_dump_off >= g_dump_have) {            // need the next sample page
-      if (g_dump_page >= g_dump_pages) {
+    if (g_dump_off >= g_dump_have) {            // need the next record
+      if (g_dump_addr >= g_dump_end) {
         if (notify_dump_end()) g_dump_active = false;
         return;
       }
-      flash.readBuffer(g_dump_page * PAGE_SIZE, g_dump_page_buf, PAGE_SIZE);
-      g_dump_page++;
-      uint16_t magic, count;
-      memcpy(&magic, g_dump_page_buf, 2);
-      memcpy(&count, g_dump_page_buf + 2, 2);
-      if (magic != PAGE_MAGIC) { g_dump_have = 0; g_dump_off = 0; continue; }
-      if (count > SAMPLES_PER_PAGE) count = SAMPLES_PER_PAGE;
-      g_dump_have = count;
+      g_dump_have = read_record(&g_dump_addr);  // 0 for anchor pages
       g_dump_off = 0;
-      g_dump_page_valid = true;
       continue;
     }
 
@@ -635,7 +665,7 @@ static void dump_step() {
     }
 
     memcpy(frame, &g_dump_abs, 4);
-    memcpy(frame + 4, g_dump_page_buf + 8 + (uint32_t)g_dump_off * 12,
+    memcpy(frame + 4, (const uint8_t *)(g_dec + (uint32_t)g_dump_off * MK_AXES),
            (size_t)n * 12);
     if (!chrData.notify(frame, 4 + (uint16_t)n * 12)) return;   // queue full
     g_dump_off += n;
@@ -689,6 +719,31 @@ static void ble_begin() {
 }
 
 // --- append samples to the flash (never erases) ----------------------------
+// Samples accumulate in RAM and get compressed a record at a time (see
+// log_codec.h). The buffer is what a power cut costs: up to MK_MAX_SAMPLES
+// (~7 s) is lost if the switch goes off mid-record. Every ordinary exit --
+// USB plugged in, phone connected, time limit, flash full -- drains it first.
+static int16_t  g_log_buf[MK_MAX_SAMPLES * MK_AXES];
+static uint16_t g_log_n = 0;
+
+// Compress and append whatever is buffered. `drain` writes the tail too,
+// otherwise only full buffers go out. Returns false when the flash is full.
+static bool flush_records(uint32_t *addr, uint16_t *seq, bool drain) {
+  uint32_t size = flash.size();
+  while (g_log_n >= (drain ? 1 : MK_MAX_SAMPLES)) {
+    if (*addr + MK_REC_BYTES > size) return false;
+    uint16_t n = mk_encode_record(g_rec, g_log_buf, g_log_n, *seq, MK_DROP_BITS);
+    if (n == 0) return false;
+    flash.writeBuffer(*addr, g_rec, MK_REC_BYTES);
+    *addr += MK_REC_BYTES;
+    *seq = (uint16_t)(*seq + MK_UNITS);
+    g_log_n = (uint16_t)(g_log_n - n);
+    if (g_log_n) memmove(g_log_buf, g_log_buf + (uint32_t)n * MK_AXES,
+                         (size_t)g_log_n * MK_AXES * sizeof(int16_t));
+  }
+  return true;
+}
+
 // Returns true if the flash filled up. Stops when: time limit hit, flash full,
 // (stop_on_vbus) USB is plugged in, or a phone connects over BLE.
 static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
@@ -697,12 +752,8 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
   uint32_t size = flash.size();
   uint16_t seq = (uint16_t)pages;
 
-  uint8_t buf[PAGE_SIZE];
-  uint16_t n = 0;
-  uint16_t magic = PAGE_MAGIC;
-  memset(buf, 0, PAGE_SIZE);
-  memcpy(buf, &magic, 2);
-  memcpy(buf + 4, &seq, 2);
+  g_log_n = 0;                                   // anything left is unwritable
+  uint32_t n_total = 0;
 
   const uint32_t period_us = 1000000UL / ODR_HZ;
   uint32_t t0 = millis();
@@ -711,7 +762,7 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
   bool buzzing = false;
 
   for (;;) {
-    if (addr + PAGE_SIZE > size) { full = true; break; }
+    if (addr + MK_REC_BYTES > size) { full = true; break; }
     if (max_ms && (millis() - t0) >= max_ms) break;
     if (stop_on_vbus && vbus_present()) break;
     if (g_conn != BLE_CONN_HANDLE_INVALID) break;  // phone is talking to us
@@ -729,33 +780,29 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
     if ((int32_t)(now - next_us) < 0) { yield(); continue; }  // let BLE run
     next_us += period_us;
 
-    int16_t *s = (int16_t *)(buf + 8 + (uint32_t)n * 12);
+    int16_t *s = &g_log_buf[(uint32_t)g_log_n * MK_AXES];
     s[0] = imu.readRawAccelX();
     s[1] = imu.readRawAccelY();
     s[2] = imu.readRawAccelZ();
     s[3] = imu.readRawGyroX();
     s[4] = imu.readRawGyroY();
     s[5] = imu.readRawGyroZ();
-    n++;
+    g_log_n++;
+    n_total++;
 
-    if (n >= SAMPLES_PER_PAGE) {
-      memcpy(buf + 2, &n, 2);
-      flash.writeBuffer(addr, buf, PAGE_SIZE);
-      addr += PAGE_SIZE;
-      seq++;
-      n = 0;
-      memset(buf, 0, PAGE_SIZE);
-      memcpy(buf, &magic, 2);
-      memcpy(buf + 4, &seq, 2);
-      led(0, (seq & 1), 0);                      // blink green while logging
+    // A record now covers several seconds, so drive the blink off the sample
+    // count instead -- it has to look alive when you check it before getting in.
+    if (n_total % 20 == 0) led(0, ((n_total / 20) & 1), 0);
+
+    if (g_log_n >= MK_MAX_SAMPLES && !flush_records(&addr, &seq, false)) {
+      full = true;
+      break;
     }
   }
 
   motor_set(0);                                  // never leave the motor on
-  if (n > 0) {                                   // flush partial final page
-    memcpy(buf + 2, &n, 2);
-    flash.writeBuffer(addr, buf, PAGE_SIZE);
-  }
+  if (!flush_records(&addr, &seq, true)) full = true;   // drain the tail
+  g_log_n = 0;
   scan_invalidate();
   return full;
 }
@@ -834,7 +881,7 @@ static void enter_console() {
   g_mode = M_CONSOLE;
   led(1, 0, 0);                                  // red: console / idle
   cmd_len = 0;
-  Serial.println("# mokkori flash logger v2 (CONSOLE -- on USB)");
+  Serial.println("# mokkori flash logger v3 (CONSOLE -- on USB)");
   if (!g_imu_ok) Serial.println("# WARN: IMU init failed");
   if (!g_flash_ok) Serial.println("# WARN: flash init failed");
   print_help();
