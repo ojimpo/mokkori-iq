@@ -28,6 +28,8 @@ struct PaceChartView: View {
     private var plotHeight: Double { Double(chart.rows.count) * Self.band }
     /// 隙間 2pt を距離（m）に換算した値。バーの上下をこのぶん詰める。
     private var gapMeters: Double { chart.poolLength * Self.barGap / Self.band }
+    /// 縁取りの太さ 1.5pt を距離（m）に換算した値。隙間 2pt に収まる幅にする。
+    private var outlineMeters: Double { chart.poolLength * 1.5 / Self.band }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -63,6 +65,19 @@ struct PaceChartView: View {
                     yEnd: .value("", s.distanceEnd)
                 )
                 .foregroundStyle(Palette.selection)
+
+                // 選択中のバーの縁取り。バーより先に置いて、バーがこの上に乗ることで
+                // 外周だけが残る（RectangleMark に stroke が無いのでこの作り）。
+                // 帯だけだと「選んだ行」は分かっても「選んだバー」が変わらないので、
+                // どのラップを見ているのか分からない（実機フィードバック 2026-07-31）。
+                RectangleMark(
+                    xStart: .value("", chart.axisLo),
+                    xEnd: .value("", s.pace100 + cap / 2),
+                    yStart: .value("", s.distanceStart + gapMeters / 2 - outlineMeters),
+                    yEnd: .value("", s.distanceEnd - gapMeters / 2 + outlineMeters)
+                )
+                .cornerRadius(Self.cornerRadius)
+                .foregroundStyle(Palette.selectionOutline)
             }
 
             ForEach(chart.rows) { row in
@@ -212,23 +227,35 @@ struct PaceChartView: View {
         .accessibilityLabel(detailSentence(for: row))
     }
 
-    /// ツールチップの位置。既定はバー先端の右隣で、はみ出すなら先端の内側（左）へ倒し、
-    /// それでも収まらなければプロットの中に押し込む。上下も同じくプロット内に収める。
+    /// ツールチップの位置。**選択中のバーには絶対に重ねない**（重なると、いま見ている
+    /// ラップそのものが隠れる。実機フィードバック 2026-07-31）。
+    /// 既定はバー先端の右隣。遅いラップでバーが右端まで届いて入らない場合は、
+    /// 先端の左へ倒す（＝バーに重なる）のではなく、**行の上下へ逃がす**。
     private func tooltipOffset(for row: PaceChart.Row,
                                in rect: CGRect,
                                proxy: ChartProxy) -> CGSize {
         let size = tooltipSize
         let tip = rect.minX + (proxy.position(forX: row.pace100) ?? 0)
-        let mid = rect.minY + (proxy.position(forY: row.distanceMid) ?? 0)
+        let rowTop = rect.minY + (proxy.position(forY: row.distanceStart) ?? 0)
+        let rowBottom = rect.minY + (proxy.position(forY: row.distanceEnd) ?? 0)
 
-        var x = tip + Self.tooltipGap
-        if x + size.width > rect.maxX { x = tip - Self.tooltipGap - size.width }
-        x = min(max(x, rect.minX + 2), max(rect.minX + 2, rect.maxX - size.width - 2))
+        if tip + Self.tooltipGap + size.width <= rect.maxX {
+            let mid = (rowTop + rowBottom) / 2
+            return CGSize(width: tip + Self.tooltipGap,
+                          height: clamp(mid - size.height / 2,
+                                        rect.minY + 2, rect.maxY - size.height - 2))
+        }
 
-        var y = mid - size.height / 2
-        y = min(max(y, rect.minY + 2), max(rect.minY + 2, rect.maxY - size.height - 2))
+        // 右に入らないケース。右端に寄せたうえで、行の下 → 行の上 の順に逃がす。
+        let x = max(rect.minX + 2, rect.maxX - size.width - 2)
+        let below = rowBottom + Self.tooltipGap
+        if below + size.height <= rect.maxY - 2 { return CGSize(width: x, height: below) }
+        return CGSize(width: x,
+                      height: max(rect.minY + 2, rowTop - Self.tooltipGap - size.height))
+    }
 
-        return CGSize(width: x, height: y)
+    private func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
+        min(max(v, lo), max(lo, hi))
     }
 
     private func detailSentence(for row: PaceChart.Row) -> String {
@@ -340,6 +367,9 @@ private enum Palette {
     static let muted = Color(rgb: 0x898781)          // 両モード共通
     /// 選択行の帯。バーの色より薄く、かつ背景から確実に浮く濃さにする。
     static let selection = dynamic(light: 0xd8e6f7, dark: 0x2c3a4a)
+    /// 選択中のバーの縁取り。バーの青とも帯とも見分けが付く強さが要るので、
+    /// ライトは濃紺・ダークはほぼ白（どちらもバーに対して最もコントラストが出る側）。
+    static let selectionOutline = dynamic(light: 0x0f2f52, dark: 0xdce9f7)
     static let surface = dynamic(light: 0xfcfcfb, dark: 0x1a1a19)
 
     static func dynamic(light: UInt32, dark: UInt32) -> Color {
