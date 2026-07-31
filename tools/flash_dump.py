@@ -2,13 +2,20 @@
 """Drive the XIAO nRF52840 Sense flash-logger (firmware/flash_logger) over USB.
 
 The logger boots into CONSOLE mode when plugged into USB and accepts:
-    INFO | DUMP | ERASE | TESTLOG <sec> | HELP
+    INFO | DUMP | TIMES | TIME <epoch> | ERASE | TESTLOG <sec> | VIB | HELP
 This host tool issues those commands, and for DUMP it reads the raw int16
 stream back and converts to g / deg-per-second using the scales the firmware
 reports via INFO.
 
+Time anchors ("sample K was taken at epoch E") are written alongside the CSV as
+`<name>.anchors.json` rather than as an extra CSV column, because the column
+layout `idx,t,ax..gz` is a contract with the app's int16 codec (MokkoriCore
+RawRecording reads exactly 8 columns) and the Phase 0 loader.
+
 Usage:
     python tools/flash_dump.py --info
+    python tools/flash_dump.py --times          # list the recorded anchors
+    python tools/flash_dump.py --set-time       # anchor "now" onto the log
     python tools/flash_dump.py --erase
     python tools/flash_dump.py --testlog 5
     python tools/flash_dump.py --dump -o session.csv
@@ -17,6 +24,7 @@ Usage:
 import argparse
 import datetime
 import glob
+import json
 import math
 import os
 import statistics as st
@@ -117,6 +125,51 @@ def cmd_info(ser, echo=True):
     return info
 
 
+def cmd_times(ser, echo=True):
+    """Read the time anchors: [{epoch_ms, sample_index, millis}, ...]."""
+    ser.reset_input_buffer()
+    ser.write(b"TIMES\n")
+    anchors = []
+    for ln in read_until(ser, "OK", 15):
+        if not ln.startswith("TIME "):
+            continue
+        a = {}
+        for tok in ln[5:].split():
+            k, _, v = tok.partition("=")
+            a[k] = int(v)
+        anchors.append(a)
+        if echo:
+            when = datetime.datetime.fromtimestamp(a["epoch_ms"] / 1000)
+            print(f"anchor: sample {a['sample_index']} = {when:%Y-%m-%d %H:%M:%S.%f}"[:-3])
+    if echo and not anchors:
+        print("no time anchors (the device clock was never set)")
+    return anchors
+
+
+def cmd_set_time(ser):
+    """Anchor the current host clock onto the log. The device has no RTC across
+    a power cycle, so this is what makes absolute timestamps possible at all."""
+    now = time.time()
+    ser.reset_input_buffer()
+    ser.write(f"TIME {now:.3f}\n".encode())
+    print("\n".join(read_until(ser, "OK", 10)))
+    print(f"anchored {datetime.datetime.fromtimestamp(now):%Y-%m-%d %H:%M:%S}")
+
+
+def save_anchors(anchors, odr, csv_path):
+    """Sidecar next to the CSV. Keeping it out of the CSV means the existing
+    8-column contract (and everything that parses it) is untouched."""
+    if not anchors:
+        return
+    path = os.path.splitext(csv_path)[0] + ".anchors.json"
+    with open(path, "w") as f:
+        json.dump({"odr_hz": odr, "anchors": anchors}, f, indent=2)
+    first = anchors[0]
+    start = (first["epoch_ms"] - first["sample_index"] * 1000 / odr) / 1000
+    print(f"saved {len(anchors)} time anchor(s) -> {path}")
+    print(f"  sample 0 = {datetime.datetime.fromtimestamp(start):%Y-%m-%d %H:%M:%S}")
+
+
 def cmd_erase(ser):
     ser.reset_input_buffer()
     ser.write(b"ERASE\n")
@@ -183,6 +236,9 @@ def main():
     ap.add_argument("-b", "--baud", type=int, default=115200)
     ap.add_argument("-o", "--out", default=None, help="CSV path for --dump/--selftest")
     ap.add_argument("--info", action="store_true")
+    ap.add_argument("--times", action="store_true", help="list the time anchors")
+    ap.add_argument("--set-time", action="store_true",
+                    help="anchor the host clock onto the log (BLE does this too)")
     ap.add_argument("--erase", action="store_true")
     ap.add_argument("--testlog", type=int, metavar="SEC")
     ap.add_argument("--dump", action="store_true")
@@ -207,12 +263,14 @@ def main():
             path = os.path.join("data", "swim", f"swim_{stamp}.csv")
         info = cmd_info(ser, echo=False)
         rows = cmd_dump(ser, info)
+        anchors = cmd_times(ser, echo=False)
         odr = int(info.get("odr_hz", 52))
         if not rows:
             print("# no data on device -- nothing to pull (device left as-is)")
             return
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         save_csv(rows, odr, path)
+        save_anchors(anchors, odr, path)
         cmd_erase(ser)
         summarize(rows, odr)
         print(f"# pulled {len(rows)} samples and erased device")
@@ -229,19 +287,26 @@ def main():
             save_csv(rows, odr, args.out)
         return
 
+    if args.set_time:
+        cmd_set_time(ser)
     if args.erase:
         cmd_erase(ser)
     if args.testlog is not None:
         cmd_testlog(ser, args.testlog)
-    if args.info or not (args.erase or args.testlog is not None or args.dump):
+    if args.times:
+        cmd_times(ser)
+    if args.info or not (args.erase or args.times or args.set_time
+                         or args.testlog is not None or args.dump):
         info = cmd_info(ser)
     if args.dump:
         info = cmd_info(ser, echo=False)
         rows = cmd_dump(ser, info)
+        anchors = cmd_times(ser, echo=False)
         odr = int(info.get("odr_hz", 52))
         summarize(rows, odr)
         if args.out:
             save_csv(rows, odr, args.out)
+            save_anchors(anchors, odr, args.out)
 
 
 if __name__ == "__main__":
