@@ -51,11 +51,25 @@ PATH="$PWD/.venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn 
 # IMU ストリームの取得/検証 (サンプルレート・各軸レンジ・重力チェック)
 .venv/bin/python tools/serial_capture.py -s 6
 
-# フラッシュ記録版 (ビルド/書込は上の firmware/imu_bringup を firmware/flash_logger に置換)
-PATH="$PWD/.venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
-PATH="$PWD/.venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem112101 --fqbn Seeeduino:nrf52:xiaonRF52840Sense firmware/flash_logger
+# フラッシュ記録版。**書き込みには RESET ボタンの素早い2回押しが要る** (2026-07-31 判明)。
+# この機体は 1200bps タッチでブートローダに落ちず、リセットはかかるがアプリに戻ってしまう。
+# 2回押し → XIAO-SENSE がマウント → --input-dir 付き upload で通る。
+PATH="$PWD/.venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52840Sense \
+  --output-dir /tmp/mk_build firmware/flash_logger
+# ここで RESET を2回押して /Volumes/XIAO-SENSE を出す
+PATH="$PWD/.venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem101 \
+  --fqbn Seeeduino:nrf52:xiaonRF52840Sense --input-dir /tmp/mk_build firmware/flash_logger
 .venv/bin/python tools/flash_dump.py --selftest 5         # ベンチ往復テスト
 .venv/bin/python tools/flash_dump.py --pull data/swim/session01.csv   # 1泳ぎ吸い出し→保存→消去
+.venv/bin/python tools/flash_dump.py --times              # 時刻アンカーの一覧
+.venv/bin/python tools/flash_dump.py --set-time           # いまの時刻をアンカーとして打つ
+
+# BLE をホストから叩く (アプリ抜きでファームだけ検証したいとき)
+# ※ macOS の TCC で Bluetooth 権限が要る。**Terminal.app から**実行すること
+#   （サンドボックス下では電波が入っていても "Bluetooth device is turned off" になる）
+.venv/bin/python tools/ble_probe.py --status
+.venv/bin/python tools/ble_probe.py --sync                # 本体の時刻を合わせる
+.venv/bin/python tools/ble_probe.py --pull out.csv        # BLE 経由で吸い出し (実測スループット付き)
 .venv/bin/python analysis/explore_swim.py data/swim/session01.csv     # 信号＋検出器を可視化
 
 # 一発レポート (取込済みCSV → 距離/ペース/レップ内訳/SPM/Strava用サマリ)
@@ -100,8 +114,15 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
 これで「短く泳ぐ→更衣室でMacに挿して吸い出し→また泳ぐ」ループが成立。
 - 記録は**追記方式**。消去は明示 `ERASE` のみ（USBを抜いても自動消去しない＝うっかりデータ消失なし）
 - 6軸 int16 を 256B ページ（magic 0xA55A/count/seq + 20 sample）で QSPI に書込。52Hz で約52分／消去まで
-- LED: 消去=青 / 記録=緑点滅 / コンソール=赤 / 満杯=赤点滅
-- コンソールコマンド: `INFO` / `DUMP` / `ERASE` / `TESTLOG <sec>`（USB中でも追記、ベンチ用）/ `VIB [ms] [pct]` / `HELP`
+- **時刻アンカーページ**（magic `0xA55B`, count=0, `[8:16] epoch_ms u64` `[16:20] sample_index u32`
+  `[20:24] millis u32`）が同じ追記ストリームに混ざる。**サンプルページのバイト列は不変**なので
+  Phase 0 パイプラインはそのまま動く。ページ形式は `firmware/flash_logger/log_format.h`
+  （Arduino の自動プロトタイプ生成が型を知らずに壊れるため、構造体は .ino に置けない）
+- LED: 消去=青 / 記録=緑点滅 / コンソール=赤 / 満杯=赤点滅 / **BLE接続中=青**
+- コンソールコマンド: `INFO` / `DUMP` / `TIMES` / `TIME <unix秒[.ms]>` / `ERASE` /
+  `TESTLOG <sec>`（USB中でも追記、ベンチ用）/ `VIB [ms] [pct]` / `HELP`
+- **BLE 接続中は USB コンソールを処理しない**（本体がスマホ相手に専念する）。
+  スマホが繋がったまま `flash_dump.py` を叩くと応答が返らないので、片方ずつ使う
 - **振動モーター対応 (2026-07-11、実機未検証)**: コイン型 ERM（JYUDAUFU 10mm×2.7mm、定格3V/最大80mA、Amazon 20個入）を
   D10 の低サイド BSS138 で駆動。回路: 3V3→モーター(+) / モーター(−)→BSS138ドレイン / ソース→GND /
   D10→(100Ω〜1kΩ)→ゲート / ゲート→(100kΩ)→GND プルダウン / 1N4148 をモーター両端に並列（カソード=3V3側）。
@@ -109,12 +130,46 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
   `VIB` はベンチ体感テスト用。**記録中は 60s ごとにダブルパルス**（200ms×2、`BUZZ_PERIOD_S` で変更・0で無効）＝
   水中で筐体＋水着越しの体感を採取と同時に検証する仕掛け。既知タイミングなので IMU データから識別・除外可能
 - `INFO` はバッテリも出す: `# vbat_mv=4015 pct=82 charging=1`。VBAT(P0.31)を VBAT_ENABLE(P0.14)=LOW で接続し、
-  3.0V内部参照/12bit/16回平均で読む。分圧比は variant の 1M/0.51M（`VBAT_DIVIDER`≈2.96）。専用の充電ステータスGPIOは無いので
+  3.0V内部参照/12bit で読む。分圧比は variant の 1M/0.51M（`VBAT_DIVIDER`≈2.96）。専用の充電ステータスGPIOは無いので
   `charging` は VBUS有り＆mv<4150 で導出（=満充電なら0）。主用途は「充電完了したか＋挿した直後の概算残量」。
-  分圧比がズレてたら実機をテスタで測って `VBAT_DIVIDER` を補正する（ビルドは通過済み、書込・実測検証は未）。
+  分圧比がズレてたら実機をテスタで測って `VBAT_DIVIDER` を補正する。
+  - **整定待ちに注意 (2026-07-31 実機で発覚)**: 当初 `delay(3)` で、`INFO` を連打すると
+    **3715 / 4107 mV を交互に返した**。分圧は ~340kΩ で測定と測定の間は切り離されているため、
+    3ms では前回の残留電荷を読んでしまう。`delay(25)` + 捨て4回 + 32回平均に変更。
+    BLE の状態 blob は毎秒出すので**10秒キャッシュ**（`vbat_cached()`）も入れた
+    ＝毎回 25ms を ADC に取られると吸い出しの邪魔になる
 - `tools/flash_dump.py`: `--pull [PATH]`（DUMP→CSV保存→ERASE を1コマンド＝1泳ぎ分。PATH省略で data/swim/ に自動命名）/
-  `--info` / `--erase` / `--testlog N` / `--selftest N`（ベンチ往復）。生int16を g/dps に変換。`--info`/GUIはバッテリ行も表示
+  `--info` / `--times` / `--set-time` / `--erase` / `--testlog N` / `--selftest N`（ベンチ往復）。
+  生int16を g/dps に変換。`--info`/GUIはバッテリ行も表示。
+  **時刻アンカーは `<name>.anchors.json` のサイドカーに書く**（CSV に列を足さない: `idx,t,ax..gz` の8列は
+  MokkoriCore の int16 コーデック `FastCSV.scan(columns: 8)` との契約）
 - 検証済(2026-06-03): TESTLOG 2s×2で 105→210（追記）、`--pull` で保存＆消去、|acc|=1.03g、往復整合
+- 検証済(2026-07-31): アンカー2つが epoch 差 3008ms・サンプル差 156 で挟まれた（156/52=3.00s で整合）。
+  アンカーページを跨いでも `DUMP` のサンプル列は無傷
+
+### BLE (Phase C+D, 2026-07-31 実装)
+**電源が入っている間ずっとアドバタイズする**。設計書の当初案は「タップで叩いて起こす」だったが、
+しきい値を実データで詰めるまで「叩いたのに起きない」が起こりうる（プールサイドでそれは最悪）ので、
+まず確実に動く方を採った。アドバタイズ電流は IMU + フラッシュ書き込みに比べれば誤差。
+タップ起動は電池が問題になったら足す（構造はそのままで足せる）。
+- **セントラル接続中は記録を止める**。話すのは必ず水から上がったあとなので実害が無く、
+  吸い出し中にフラッシュへ書き込まれない
+- GATT base `6D6B6F69-A55A-4000-8000-0000000000NN`（"mkoi" + フラッシュ magic）:
+
+  | 末尾 | プロパティ | 内容 |
+  |---|---|---|
+  | 0002 | Write | 8B uint64 LE epoch_ms → 時刻アンカーを追記 |
+  | 0003 | Read/Notify | 状態 36B blob（記録量・容量・電池・最終アンカー・吸い出し進捗・フラグ） |
+  | 0004 | Notify | 吸い出し。`u32 絶対サンプル番号 + N×12B`、終端は `0xFFFFFFFF` 単独 |
+  | 0005 | Write | 制御。`01`ERASE / `02`VIB(pct,n,n×u16ms) / `03`SET_HAPTIC / `10`DUMP_START(u32 開始) / `11`DUMP_STOP |
+
+- **状態 blob は後ろに足すだけ**（先頭の version だけ見て知らない後ろは読み飛ばす）＝
+  ファームとアプリの更新をロックステップにしない
+- **吸い出しフレームに絶対サンプル番号を入れてある**ので穴や途中切断が検出できる。
+  途中までのデータを「それらしい短いセッション」として保存する事故が構造的に起きない
+- ERASE と VIB は BLE コールバックから直接やらない（数十秒ブロックする・フラッシュは再入不可）。
+  フラグを立てて `loop()` で実行し、進行中はフラグを状態 blob に出す
+- `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` で MTU 247 → 1フレーム 20 サンプル（=1ページぶん）
 
 ### 実データ取込 (device CSV → Phase 0)
 - `dataio.load_swim_csv(path)`: flash_dump CSV を session dict 化。**g→m/s²・dps→rad/s に変換**（Brunner/検出器閾値の単位に合わせる）、fs は t から自動推定
@@ -244,9 +299,11 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   Flutter のクロス利点は効かない。核が自作BLE機器との通信なので抽象層の無い CoreBluetooth が最適。
 - **時刻問題**: 電源OFF中はRTC保持不可。スマホから epoch をもらい「サンプル番号K=epoch E」のアンカーをフラッシュに追記、
   ホストが `E+(i-K)/ODR` で各サンプルの絶対時刻を逆算（既存のサンプルページ形式は壊さない。新 magic `0xA55B`＋新 `TIMES` コマンド）。
-- **BLE起動トリガー = タップ（叩く）**。物理ボタンは防水ケースに穴=浸水リスクなので今あるハードのまま加速度のタップ検出で起こす
-  （叩いた時だけ数十秒BLEを開く＝記録の52Hzと無線がぶつからない）。既存の3タップ境界マーカー・泳ぎと誤作動しないパターン＋静止ゲートが要件。
-  物理ボタンは筐体設計時に再検討。
+- ~~**BLE起動トリガー = タップ（叩く）**~~ → **常時アドバタイズに変更 (2026-07-31, ユーザー確認済み)**。
+  タップ起動はしきい値を実データで詰めるまで**「叩いたのに起きない」**が起こりうる（プールサイドでそれは最悪）ので、
+  まず確実に動く方を採った。アドバタイズ電流は IMU + フラッシュ書き込みに比べれば誤差。
+  代わりに**セントラル接続中は記録を止める**（話すのは必ず水から上がったあと＝実害が無く、吸い出し中に
+  フラッシュへ書き込まれない）。タップ起動は電池が問題になったら足す。物理ボタンは筐体設計時に再検討。
 - **役割分担 = 重い処理はスマホへオフロード (2026-07-28 確定)**。デバイス側は「記録＋（振動用の）コーザル壁カウンタ」だけに絞り、
   非コーザルな解析パイプライン（verticality 自己キャリブレーション・リズムリカバリ・デフラグ・レポート）は**スマホ側で実行**する。
   生データ(6軸int16)を BLE でフル転送する前提（フラッシュ満杯でも 2MB ≒ iOS 実効 20〜40kB/s で1〜2分。時刻同期と同じ接続で送れる）。
@@ -330,15 +387,25 @@ sudo usermod -aG dialout $USER                              # シリアル権限
 - **画面構成 = 2タブ (2026-07-28 確定)**: **デバイス**（本体まわり: ログ取り込み・バッテリー/メモリー・
   時刻合わせ・メモリー消去・振動フィードバックの設定）と **ログ**（一覧 → レポート → ラップ確認 → Strava）。
   起動時はログ。Strava の設定は設定するものがそれしか無いのでログ画面の左上のまま。
-  デバイスタブのうち**いま動くのは「ログ取り込み」と「振動の設定（保存のみ）」だけ**で、
-  本体と話す項目は「未接続」と明示したうえで操作を無効にしてある（黙って空欄にしない）。
+- **Phase D (BLE) 実装済み (2026-07-31)**: `MokkoriIQ/Models/BLEManager.swift`（CoreBluetooth セントラル）。
+  デバイスタブの本体まわりが**全部動く**: 自動接続・バッテリー/メモリー表示・時刻合わせ・メモリー消去（確認ダイアログ付き）・
+  **本体から直接吸い出し**（進捗と実測スループットからの残り時間つき）・振動パターンの体感テストと設定送信。
+  - **BLE で届くのは raw.bin と同じ int16 の並び**なので、`SessionStore.persist()` に CSV 経路と合流させてある
+    ＝BLE 取り込みと CSV 取り込みで解析結果が一致する（片方だけ挙動が変わる事故が起きない）
+  - **本体に時刻アンカーがあれば `startEpoch` が自動で入る**＝Strava アップ時の手入力が不要になる
+  - 吸い出しフレームは絶対サンプル番号つきなので、穴や途中切断は**エラーとして出す**
+    （途中までのデータを「それらしい短いセッション」として保存しない）
+  - CSV インポートは残す（タブレットで吸い出した過去ぶん用）。ボタン名は「CSV から取り込む」
+  - シミュレータに BLE は無いので `.unsupported` になる。UI テストは**繋がらない理由が画面に出ること**と
+    **本体が要る操作が押せないこと**を検証している
 - **UI テスト (`app/MokkoriIQ/UITests/ScreenFlowTests.swift`)**: シミュレータを実際に操作する。UI を触ったら必ず実行。
   `UITEST_SCREENSHOT_DIR` を渡すと目視用スクリーンショットも書き出す（`xcodebuild` からは **`TEST_RUNNER_` 前置**が必要。
   出力先は `/Users/...` 配下にすること＝`/tmp` はシミュレータ内に落ちてホストに出てこない）。
   **グラフのタップは `tapChart()` 経由で**: グラフは 1ラップ 12pt で伸びて画面より高くなるので、
   `coordinate(withNormalizedOffset: dy: 0.5)` は画面外を指してタップが無効になる（2026-07-31 に踏んだ）。
 - 未了: SPM 表示（スペクトル cadence はコア未移植・後回し可。本ごとストローク数から導出可能）、
-  **実アクティビティの投稿テスト**（疎通と Strava 到達までは検証済み）。
+  **実アクティビティの投稿テスト**（疎通と Strava 到達までは検証済み）、
+  **本体側のコーザル壁カウンタ**（これが無いと距離ベースの振動が鳴らせない）と**振動モーターの配線**。
   実機 iPhone での動作確認は 2026-07-31 に実施済み（起動・遷移・CSV 取込の体感速度とも問題なし）。
 - 落とし穴: Xcode 26.6 は **iOS 26.5 シミュレータランタイム必須**（26.4 が残っていても destination が1つも出ず
   "iOS 26.5 is not installed" になる）。`xcodebuild -downloadPlatform iOS` で導入（2026-07-28 導入済み・26.4 は削除）。
