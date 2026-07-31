@@ -6,6 +6,15 @@ options:
   bundleIdPrefix: com.ojimpo
   deploymentTarget:
     iOS: "17.0"
+settings:
+  base:
+    # 実機ビルド用の署名。7GPQK6Q593 は kou997@gmail.com の Personal Team
+    # （無料 Apple ID）。CLI から実機に入れるときは -allowProvisioningUpdates を付ける:
+    #   xcodebuild -project MokkoriIQ.xcodeproj -scheme MokkoriIQ \
+    #     -destination 'platform=iOS,id=<UDID>' -allowProvisioningUpdates build
+    # 無料 Team なので署名は7日で切れる（切れたら再インストール）。
+    DEVELOPMENT_TEAM: 7GPQK6Q593
+    CODE_SIGN_STYLE: Automatic
 packages:
   MokkoriCore:
     path: ../MokkoriCore
