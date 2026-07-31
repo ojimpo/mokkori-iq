@@ -1,4 +1,4 @@
-# mokkori-iq アプリ開発 引き継ぎメモ (2026-07-28 時点)
+# mokkori-iq アプリ開発 引き継ぎメモ (2026-07-31 時点)
 
 次のセッションはこれを読めば続きから入れる。全体計画は `docs/phase2_app_plan.md`、
 プロジェクト全体の約束事は `CLAUDE.md`。**Phase A / B のコードは完成していて、
@@ -30,11 +30,22 @@ cd app/MokkoriIQ && xcodegen && xcodebuild -project MokkoriIQ.xcodeproj -scheme 
 # iOS アプリを開く（.xcodeproj は生成物。コミットしていない）
 brew install xcodegen              # 未導入なら
 cd app/MokkoriIQ && xcodegen && open MokkoriIQ.xcodeproj
+
+# 実機 iPhone に入れる（署名は project.yml に入れてある。UDID は devicectl list devices）
+xcodebuild -project MokkoriIQ.xcodeproj -scheme MokkoriIQ \
+  -destination 'generic/platform=iOS' -allowProvisioningUpdates build
+xcrun devicectl device install app --device <UDID> \
+  ~/Library/Developer/Xcode/DerivedData/MokkoriIQ-*/Build/Products/Debug-iphoneos/MokkoriIQ.app
+xcrun devicectl device process launch --device <UDID> com.ojimpo.mokkori-iq
 ```
 
 シミュレータ実行は iPhone 17 Pro で確認済み。**Xcode 26.6 は iOS 26.5 の
 シミュレータランタイムが必須**（無いと destination が1つも出ず
 "iOS 26.5 is not installed" になる）。`xcodebuild -downloadPlatform iOS` で入る。
+
+実機は 2026-07-31 に確認済み（起動・遷移・CSV 取込の体感速度とも問題なし）。
+無料 Apple ID の Personal Team なので**署名は7日で切れる**。手順と落とし穴
+（ペアリング・デベロッパApp の信頼・USB 確認）は CLAUDE.md「実機 iPhone に入れる」。
 
 ## 構成
 
@@ -103,17 +114,15 @@ BLE が入ったら `DeviceStatus` を埋めてボタンを有効にするだけ
 
 ## すぐやれる残作業（優先度順）
 
-1. **実機 iPhone で動かす**（無料 Apple ID で可・7日で再署名）。シミュレータ限定の
-   確認しかしていない。**画面の描画・遷移・ターン編集の再計算は UI テストで自動確認済み**なので、
-   実機で見るのは「実際の指の操作感」と「取込の体感速度」。
-2. **Strava に実投稿してみる**。設定画面に API キーを入れるだけで投稿できる状態
+1. **Strava に実投稿してみる**。設定画面に API キーを入れるだけで投稿できる状態
    （キー: `ssh arigato-nas 'grep GATEWAY_API_KEY ~/dev/strava-autopilot/.env'`）。
    疎通・トークン・Strava 到達・エラー伝搬までは検証済みだが、**実際にアクティビティを
    作るところだけ未検証**（ゴミ投稿を避けたため）。
-3. **CSV インポートの実地確認**。UI テストは環境変数 `UITEST_SEED_CSV` でパスを渡して
-   取り込ませている（アプリ側に種まきフックあり）。「ファイル」アプリを人が操作する
-   `fileImporter` 経路だけは未実行。
-4. Phase C（ファーム時刻アンカー + `TIMES`）。これが入ると手動アンカー入力が不要になる。
+2. Phase C（ファーム時刻アンカー + `TIMES`）。これが入ると手動アンカー入力が不要になる。
+
+CSV インポートは 2026-07-31 に実地確認済み（AirDrop → 「ファイル」→ デバイスタブの
+「ログを取り込む」。16万行でも体感で待たされない）。UI テストのほうは環境変数
+`UITEST_SEED_CSV` でパスを渡して取り込ませている（アプリ側に種まきフックあり）。
 
 ## 手を付けていない設計判断
 
@@ -132,7 +141,13 @@ BLE が入ったら `DeviceStatus` を埋めてボタンを有効にするだけ
 （`SessionListView` の `.task` に種まきフックがあり、**環境変数があるときだけ**動く）。
 検証しているのは「レポートの主要な数値が出る」「ラップ表が出る」
 「ターンを1つ消すと距離が 25m 減り、破棄すると戻る」「ゲートウェイ未設定なら投稿ボタンが押せない」
-「ペースグラフが出て、バーをタップするとラップの詳細が出る」。
+「ペースグラフが出て、バーをタップするとツールチップにラップの詳細が出る
+（遅いラップで左へ折り返してもグラフからはみ出さない・もう一度タップで解除）」。
+
+**グラフのタップは `tapChart()` を通すこと。** グラフは 1ラップ 12pt で伸びるので
+画面より高くなり、`coordinate(withNormalizedOffset: dy: 0.5)` が画面外を指して
+タップが無効になる（黙って何も起きないので原因が分かりにくい）。`tapChart` は
+「画面に見えているグラフの範囲」から dy を逆算する。
 
 **目視用のスクリーンショット**も撮れる（グラフのように数値が通っても見た目が壊れうるもの用）。
 `UITEST_SCREENSHOT_DIR` を渡したときだけ書き出す。`xcodebuild` から渡すときは

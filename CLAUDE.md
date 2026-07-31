@@ -279,6 +279,25 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   brew install xcodegen && cd app/MokkoriIQ && xcodegen    # MokkoriIQ.xcodeproj を生成 → Xcode で開く
   xcodebuild -project MokkoriIQ.xcodeproj -scheme MokkoriIQ -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
   ```
+- **実機 iPhone に入れる (2026-07-31 に初実施・動作確認済み)**: 署名は `project.yml` にプロジェクト単位で
+  入れてある（`DEVELOPMENT_TEAM: 7GPQK6Q593` = kou997@gmail.com の Personal Team ＝ 無料 Apple ID / `CODE_SIGN_STYLE: Automatic`）。
+  ```bash
+  xcrun devicectl list devices                       # UDID を確認
+  xcodebuild -project MokkoriIQ.xcodeproj -scheme MokkoriIQ \
+    -destination 'generic/platform=iOS' -allowProvisioningUpdates build     # ← このフラグ必須
+  xcrun devicectl device install app --device <UDID> \
+    ~/Library/Developer/Xcode/DerivedData/MokkoriIQ-*/Build/Products/Debug-iphoneos/MokkoriIQ.app
+  xcrun devicectl device process launch --device <UDID> com.ojimpo.mokkori-iq
+  ```
+  - **無料 Team なので署名は7日で失効**する。切れたら同じ手順で入れ直す
+  - `The device must be paired before it can be connected` が出たら
+    **iPhone のロックを解除した状態で** `xcrun devicectl manage pair --device <UDID>`
+    （ロック中だと `Failed to authenticate the user` で即失敗する）。ネットワーク越しに `available` と
+    出ていてもペアリングは別問題
+  - **初回起動は必ず弾かれる**（`invalid code signature ... has not been explicitly trusted`）→
+    iPhone の 設定 → 一般 → VPN とデバイス管理 → デベロッパApp で信頼。この項目は**インストール後に初めて出る**
+  - USB に居るかの確認は `ioreg -p IOUSB -w0 -l | grep 'USB Product Name'`。
+    `system_profiler SPUSBDataType` はサンドボックス下で無言で空を返すので使わない
 - 実装済み: CSV インポート（「ファイル」アプリ経由 fileImporter）→ 永続化は **raw.bin (int16) + meta.json + overlay.json** に分離
   （`Documents/sessions/<uuid>/`）。int16 化は**CSV 直読みとビット単位同値をテストで担保**（RawRecording。ダメな形式は raw.csv フォールバック）。
   画面: セッション一覧 → レポート（距離/ペース/半分割/レップ内訳/CROSS-CHECK警告）→ **壁インターバル確認画面**
@@ -290,6 +309,11 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   **回帰の傾向線は引かない**（輪郭で既に読めるうえ、線が3種類交差して読みづらかった。
   ユーザー判断 2026-07-28。回帰の計算自体は残っていて、上の一行の数字がそれ）。
   設計と実装で分かったことは `docs/pace_chart_design.md`。
+  **ラップの詳細はバーに貼り付くツールチップで出す (2026-07-31、実機で触っての変更)**: 以前は
+  選択の合図が軸端の小さい丸だけ・数値がグラフの下の一行だったので、実機では選択に気づけず数値も見落とす。
+  いまは 選択行にプロット幅いっぱいの帯 ＋ バー先端のツールチップ（遅いラップは先端の左へ折り返す）。
+  **実装は Chart の `.annotation` ではなく `.chartOverlay`**＝Charts の annotation は
+  アクセシビリティツリーに出ず、VoiceOver から読めず UI テストからも掴めないため。
   **異常値の強調（橙）は実データ2セッションでは1本も出ない**（ペースが揃っており、ブロック中央値比が
   最大 1.17 で判定値 1.25 に届かない）。閾値は緩めず据え置き＝「検出がずれた／泳ぎが崩れた」ときの
   非常口という位置づけ。色が付く経路は合成データのテスト（`PaceChartTests.testOutlierEmphasis`）で担保。
@@ -309,8 +333,11 @@ sudo usermod -aG dialout $USER                              # シリアル権限
 - **UI テスト (`app/MokkoriIQ/UITests/ScreenFlowTests.swift`)**: シミュレータを実際に操作する。UI を触ったら必ず実行。
   `UITEST_SCREENSHOT_DIR` を渡すと目視用スクリーンショットも書き出す（`xcodebuild` からは **`TEST_RUNNER_` 前置**が必要。
   出力先は `/Users/...` 配下にすること＝`/tmp` はシミュレータ内に落ちてホストに出てこない）。
+  **グラフのタップは `tapChart()` 経由で**: グラフは 1ラップ 12pt で伸びて画面より高くなるので、
+  `coordinate(withNormalizedOffset: dy: 0.5)` は画面外を指してタップが無効になる（2026-07-31 に踏んだ）。
 - 未了: SPM 表示（スペクトル cadence はコア未移植・後回し可。本ごとストローク数から導出可能）、
-  実機 iPhone での動作確認、**実アクティビティの投稿テスト**（疎通と Strava 到達までは検証済み）。
+  **実アクティビティの投稿テスト**（疎通と Strava 到達までは検証済み）。
+  実機 iPhone での動作確認は 2026-07-31 に実施済み（起動・遷移・CSV 取込の体感速度とも問題なし）。
 - 落とし穴: Xcode 26.6 は **iOS 26.5 シミュレータランタイム必須**（26.4 が残っていても destination が1つも出ず
   "iOS 26.5 is not installed" になる）。`xcodebuild -downloadPlatform iOS` で導入（2026-07-28 導入済み・26.4 は削除）。
   CoreSimulator が古い警告が出たら `launchctl remove com.apple.CoreSimulator.CoreSimulatorService` で再起動。

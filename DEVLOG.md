@@ -460,3 +460,49 @@ Cosense「mokkori-iq 進捗ログ」のミラー。時刻は JST（ツール実�
   余計に捨てる理由がない
 - 残るデータ依存性は、**本体が自分の消費ペースを知っている**のでアプリの「記録可能時間」に実測ベースで
   出せばよい（マージンを勘で盛る必要がない）。デバイスタブに枠は用意済み
+
+## 2026-07-31
+
+### 10:20 アプリを iPhone 実機で動かした（初）
+- これまでシミュレータだけだったのを実機へ。**署名設定がプロジェクトに一切入っていなかった**ので
+  `app/MokkoriIQ/project.yml` にプロジェクト単位で `DEVELOPMENT_TEAM: 7GPQK6Q593`（kou997@gmail.com の
+  Personal Team = 無料 Apple ID）と `CODE_SIGN_STYLE: Automatic` を追加 → `xcodegen` で再生成
+- CLI から実機へ入れる手順（この3つ）:
+  ```bash
+  xcodebuild -project MokkoriIQ.xcodeproj -scheme MokkoriIQ \
+    -destination 'generic/platform=iOS' -allowProvisioningUpdates build
+  xcrun devicectl device install app --device <UDID> <DerivedData>/Build/Products/Debug-iphoneos/MokkoriIQ.app
+  xcrun devicectl device process launch --device <UDID> com.ojimpo.mokkori-iq
+  ```
+  `-allowProvisioningUpdates` が無いとプロファイルを発行できずビルドが落ちる。**無料 Team なので署名は7日で失効**
+- ハマり: `devicectl` が `The device must be paired before it can be connected`。ネットワーク越しには
+  「available」と出るのにペアリングだけ未了という状態がある。`xcrun devicectl manage pair --device <UDID>` を
+  **iPhone のロックを解除した状態で**叩くと端末に信頼ダイアログが出て通る（ロック中だと
+  `Failed to authenticate the user` で即失敗する）
+- ハマり: `system_profiler SPUSBDataType` はサンドボックス下で無言で空を返す。USB に居るかの確認は
+  `ioreg -p IOUSB -w0 -l | grep 'USB Product Name'` を使う（これは通る）
+- インストール後の初回起動は「信頼されていないデベロッパ」で弾かれる →
+  設定 → 一般 → VPN とデバイス管理 → デベロッパApp で信頼。**この項目はインストール後に初めて現れる**
+- 動作: 起動・画面遷移とも問題なし。**CSV 取り込みの体感速度も気にならない**（16万行、AirDrop した
+  7/28 セッション）。`FastCSV`(strtod) にしておいた効果が実機でも出ている
+
+### 11:30 ペースグラフのラップ詳細をツールチップに作り直した（実機フィードバック）
+- 実機で触っての指摘: **①バーを選択したことが分かりにくい ②詳細がグラフの下に出るので気づかない**
+  （選択の合図が軸端の小さい丸だけ、数値は凡例の下の一行だった）
+- 直した内容:
+  - 選択行に**プロット幅いっぱいの帯**を敷く（どの行を選んだかはバーの長さが行ごとに違うので、
+    帯でないと伝わらない）
+  - 詳細は**バー先端に貼り付くツールチップ**へ移動。ラップ番号・セット / ペース（大きく）/
+    タイム・ストローク・SWOLF の3行。**遅いラップはバーが右端まで届く**ので、はみ出す場合は
+    先端の左へ折り返す。上下もプロット内に押し込む
+  - グラフ下は操作の案内だけ（未選択「バーをタップすると…」/ 選択中「もう一度タップで選択を解除」）
+- **知見: Charts の `.annotation` はアクセシビリティツリーに出ない**。最初 annotation で実装したら
+  描画はされるのに VoiceOver から読めず、UI テストからも掴めなかった（要素ツリーを dump して確認。
+  Charts はマークを `'100.9 to 138, 325 to 350'` のような自動ラベルの Other として並べるだけ）。
+  → **`.chartOverlay` に移して普通の SwiftUI として置いた**。位置決めは
+  `ChartProxy.position(forX:/forY:)` + PreferenceKey で測ったツールチップ実寸から自前で折り返す
+- **知見: UI テストのタップ位置**。グラフは 1ラップ 12pt で伸びるので画面より高くなり、
+  `coordinate(withNormalizedOffset: dy: 0.5)` が**画面外**を指してタップが無効になっていた
+  （chart.frame の y が -303 まで行く）。**画面に見えている範囲から dy を逆算**する `tapChart` を追加。
+  ついでに「遅いラップで左へ折り返しても収まる」ことも frame の包含で検証
+- UI テスト 7件（1件はスクショ用の skip）全 green。実機にも入れ直して確認
