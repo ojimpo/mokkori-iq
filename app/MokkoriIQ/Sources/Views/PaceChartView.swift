@@ -10,6 +10,8 @@ import MokkoriCore
 struct PaceChartView: View {
     let chart: PaceChart
     @State private var selected: PaceChart.Row?
+    /// ツールチップの実寸。プロットの縁で折り返す位置を出すのに要る。
+    @State private var tooltipSize: CGSize = .zero
 
     /// 1ラップの帯 = バー 10pt + 隙間 2pt。**セッションによらず固定**にする
     /// （縮めて全部を1画面に押し込むと、バーの太さが変わって比較できなくなる）。
@@ -20,6 +22,8 @@ struct PaceChartView: View {
     private static let cornerRadius = 4.0
     /// y 軸ラベルの帯（バーの実幅を出すための概算。角丸の詰め物にしか使わない）
     private static let yAxisBand = 52.0
+    /// バー先端とツールチップの隙間
+    private static let tooltipGap = 6.0
 
     private var plotHeight: Double { Double(chart.rows.count) * Self.band }
     /// 隙間 2pt を距離（m）に換算した値。バーの上下をこのぶん詰める。
@@ -48,6 +52,19 @@ struct PaceChartView: View {
 
     private func chartBody(cap: Double) -> some View {
         Chart {
+            // 選択行の帯。バーより先に置いて背面にする。バーの長さは行ごとに違うので、
+            // 「どの行を選んだか」はプロット幅いっぱいの帯でないと伝わらない
+            // （以前は左端の小さな丸だけで、実機で選択が分からなかった）。
+            if let s = selected {
+                RectangleMark(
+                    xStart: .value("", chart.axisLo),
+                    xEnd: .value("", chart.axisHi),
+                    yStart: .value("", s.distanceStart),
+                    yEnd: .value("", s.distanceEnd)
+                )
+                .foregroundStyle(Palette.selection)
+            }
+
             ForEach(chart.rows) { row in
                 RectangleMark(
                     xStart: .value("", chart.axisLo),
@@ -68,7 +85,8 @@ struct PaceChartView: View {
             }
 
             // 直接ラベルは「強調されたラップ」と「ベスト」だけ。全バーに数値は振らない。
-            ForEach(labelled) { row in
+            // 選択中の行だけは外す（同じ場所にツールチップが出て重なるため）。
+            ForEach(labelled.filter { $0.id != selected?.id }) { row in
                 RectangleMark(
                     xStart: .value("", row.pace100),
                     xEnd: .value("", row.pace100),
@@ -110,12 +128,9 @@ struct PaceChartView: View {
             // 線を重ねると平均線・レスト線と合わせて3種類の線が交差して読みづらかった。
             // 「垂れているか」は下の一行（trendSentence）で言葉にする。
 
-            if let s = selected {
-                PointMark(x: .value("", chart.axisLo), y: .value("", s.distanceMid))
-                    .symbol(.circle)
-                    .symbolSize(60)
-                    .foregroundStyle(Palette.bar)
-            }
+            // ツールチップは Chart の外（chartOverlay）に置く。Charts の annotation は
+            // アクセシビリティツリーに出ないので、VoiceOver からも UI テストからも
+            // 中身が読めなくなる（2026-07-31 に実機フィードバックで作り直したときに判明）。
         }
         .chartXScale(domain: chart.axisLo...chart.axisHi)
         .chartYScale(domain: [chart.totalMeters, 0])   // 上が 0m（泳ぎ進む向き）
@@ -144,12 +159,80 @@ struct PaceChartView: View {
         .chartPlotStyle { $0.background(Palette.surface) }
         .chartOverlay { proxy in
             GeometryReader { geo in
-                Rectangle().fill(.clear).contentShape(Rectangle())
-                    .onTapGesture { loc in
-                        select(at: loc, proxy: proxy, geo: geo)
+                ZStack(alignment: .topLeading) {
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                        .onTapGesture { loc in
+                            select(at: loc, proxy: proxy, geo: geo)
+                        }
+                    if let s = selected, let anchor = proxy.plotFrame {
+                        tooltip(for: s)
+                            .background(GeometryReader { g in
+                                Color.clear.preference(key: TooltipSizeKey.self,
+                                                       value: g.size)
+                            })
+                            .offset(tooltipOffset(for: s, in: geo[anchor], proxy: proxy))
+                            // 触れてもツールチップ自身は反応せず、下のバーの選択解除に通す
+                            .allowsHitTesting(false)
                     }
+                }
+                .onPreferenceChange(TooltipSizeKey.self) { tooltipSize = $0 }
             }
         }
+    }
+
+    // MARK: - ツールチップ
+
+    /// バーの先端に出す吹き出し。ペースを主役にして、他は下に小さく1行でまとめる。
+    private func tooltip(for row: PaceChart.Row) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(row.id + 1)ラップ目・セット\(row.setNumber)")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(fmtPace(row.pace100))
+                    .font(.system(size: 17, weight: .semibold))
+                    .monospacedDigit()
+                Text("/100m").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Text("\(String(format: "%.1f", row.duration))秒・\(row.strokes)ストローク・SWOLF \(Int(row.swolf.rounded(.down)))")
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .fixedSize()
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        // バーの上に浮かせるので、下地は必ず不透明側に寄せる（material + 影）
+        .background(RoundedRectangle(cornerRadius: 8).fill(.regularMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(Palette.muted.opacity(0.35), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 4, y: 1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("paceTooltip")
+        .accessibilityLabel(detailSentence(for: row))
+    }
+
+    /// ツールチップの位置。既定はバー先端の右隣で、はみ出すなら先端の内側（左）へ倒し、
+    /// それでも収まらなければプロットの中に押し込む。上下も同じくプロット内に収める。
+    private func tooltipOffset(for row: PaceChart.Row,
+                               in rect: CGRect,
+                               proxy: ChartProxy) -> CGSize {
+        let size = tooltipSize
+        let tip = rect.minX + (proxy.position(forX: row.pace100) ?? 0)
+        let mid = rect.minY + (proxy.position(forY: row.distanceMid) ?? 0)
+
+        var x = tip + Self.tooltipGap
+        if x + size.width > rect.maxX { x = tip - Self.tooltipGap - size.width }
+        x = min(max(x, rect.minX + 2), max(rect.minX + 2, rect.maxX - size.width - 2))
+
+        var y = mid - size.height / 2
+        y = min(max(y, rect.minY + 2), max(rect.minY + 2, rect.maxY - size.height - 2))
+
+        return CGSize(width: x, height: y)
+    }
+
+    private func detailSentence(for row: PaceChart.Row) -> String {
+        "\(row.id + 1)ラップ目（セット\(row.setNumber)）・\(String(format: "%.1f", row.duration))秒・\(fmtPace(row.pace100))/100m・\(row.strokes)ストローク・SWOLF \(Int(row.swolf.rounded(.down)))"
     }
 
     // MARK: - グラフの下の一行
@@ -158,15 +241,12 @@ struct PaceChartView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(trendSentence)
                 .font(.footnote)
-            if let s = selected {
-                Text("\(s.id + 1)ラップ目（セット\(s.setNumber)）・\(String(format: "%.1f", s.duration))秒・\(fmtPace(s.pace100))/100m・\(s.strokes)ストローク・SWOLF \(Int(s.swolf.rounded(.down)))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("バーをタップするとラップの詳細が出ます")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            // 詳細はツールチップ側に移した（下に出していた頃は実機で気づけなかった）。
+            // ここには操作の案内だけを残す。
+            Text(selected == nil ? "バーをタップするとラップの詳細が出ます"
+                                 : "もう一度タップで選択を解除")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             legend
             if let m = chart.distanceMismatch {
                 Label("グラフは壁ベースの \(fmtMeters(chart.totalMeters))。レポートの距離とは \(fmtMeters(abs(m))) 違います（CROSS-CHECK）",
@@ -239,6 +319,14 @@ struct PaceChartView: View {
     }
 }
 
+private struct TooltipSizeKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next != .zero { value = next }
+    }
+}
+
 /// docs/pace_chart_design.md の配色。ライト・ダークとも配色バリデータで全項目 PASS
 /// （明度帯・彩度・色覚多様性の分離 ΔE・通常視 ΔE・背景コントラスト）。
 /// **ダークは自動反転ではなく明示値**。値の大小で色は変えない（長さで既に表しているため）。
@@ -250,6 +338,8 @@ private enum Palette {
     /// レスト線（横に何本も出るので落ち着いた色にする）
     static let rest = dynamic(light: 0x2e9e6b, dark: 0x35a273)
     static let muted = Color(rgb: 0x898781)          // 両モード共通
+    /// 選択行の帯。バーの色より薄く、かつ背景から確実に浮く濃さにする。
+    static let selection = dynamic(light: 0xd8e6f7, dark: 0x2c3a4a)
     static let surface = dynamic(light: 0xfcfcfb, dark: 0x1a1a19)
 
     static func dynamic(light: UInt32, dark: UInt32) -> Color {

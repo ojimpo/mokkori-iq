@@ -48,6 +48,20 @@ final class ScreenFlowTests: XCTestCase {
         return app.staticTexts[label].exists
     }
 
+    /// グラフの「画面に見えている行」をタップする。グラフはセッションの長さに比例して
+    /// 縦に伸びる（1ラップ 12pt）ので画面より高くなり、正規化オフセットをそのまま渡すと
+    /// 画面外を指してタップが無効になる。上下 40pt はメモリと角丸を避けるための余白。
+    /// `bias` は「画面に見えているグラフの範囲」の中での縦位置（0=上端, 1=下端）。
+    func tapChart(_ app: XCUIApplication, _ chart: XCUIElement, bias: CGFloat = 0.5) {
+        let f = chart.frame
+        // 上下 100pt はナビゲーションバーとタブバーに隠れる帯
+        let top = max(f.minY + 40, app.frame.minY + 100)
+        let bottom = min(f.maxY - 8, app.frame.maxY - 100)
+        let y = top + (bottom - top) * bias
+        chart.coordinate(withNormalizedOffset:
+            CGVector(dx: 0.35, dy: (y - f.minY) / f.height)).tap()
+    }
+
     /// 目視確認用のスクリーンショット。`UITEST_SCREENSHOT_DIR` を渡したときだけ書く
     /// （グラフのように「数値では通っても見た目が破綻しうる」ものを人が見るため）。
     func dump(_ app: XCUIApplication, _ name: String) {
@@ -110,15 +124,40 @@ final class ScreenFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["バーをタップするとラップの詳細が出ます"].exists,
                       "タップの案内が無い")
 
-        // バーをタップすると、その本の詳細（本タイム/ストローク/SWOLF）が出る
+        // バーをタップすると、そのバーに貼り付いたツールチップに
+        // ラップの詳細（ラップタイム/ストローク/SWOLF）が出る
         let chart = app.otherElements["paceChart"]
         XCTAssertTrue(chart.exists, "グラフ本体が見つからない")
-        chart.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5)).tap()
-        let detail = app.staticTexts.matching(
-            NSPredicate(format: "label CONTAINS 'ラップ目' AND label CONTAINS 'SWOLF'"))
-        XCTAssertTrue(detail.firstMatch.waitForExistence(timeout: 5),
-                      "バーをタップしても本の詳細が出ない")
+        // グラフは縦に長く、見出しが出た時点ではまだ画面の下端。人が触るときと同じく
+        // グラフ本体が画面に入るまで送ってからタップする（スクショの確認にも要る）。
+        app.swipeUp(velocity: .slow)
+        app.swipeUp(velocity: .slow)
+        // グラフ(536pt)は画面より高いので、正規化オフセットの 0.5 は画面外を指しうる。
+        // 画面の中央がグラフのどこに当たるかから dy を出す。
+        tapChart(app, chart)
+        let tooltip = app.descendants(matching: .any)
+            .matching(identifier: "paceTooltip").firstMatch
+        let appeared = tooltip.waitForExistence(timeout: 5)
         dump(app, "pace_chart_selected")
+        XCTAssertTrue(appeared, "バーをタップしてもツールチップが出ない")
+        XCTAssertTrue(tooltip.label.contains("ラップ目") && tooltip.label.contains("SWOLF"),
+                      "ツールチップの内容が足りない: \(tooltip.label)")
+        XCTAssertTrue(app.staticTexts["もう一度タップで選択を解除"].exists,
+                      "解除の案内が無い")
+        XCTAssertTrue(chart.frame.insetBy(dx: -6, dy: -6).contains(tooltip.frame),
+                      "ツールチップがグラフからはみ出している: \(tooltip.frame) / \(chart.frame)")
+
+        // 遅いラップはバーが右端まで届くので、ツールチップは先端の左へ折り返す。
+        // 垂れている終盤のラップを選んで、折り返しても収まることを見る。
+        tapChart(app, chart, bias: 1.0)
+        dump(app, "pace_chart_selected_flipped")
+        XCTAssertTrue(chart.frame.insetBy(dx: -6, dy: -6).contains(tooltip.frame),
+                      "折り返したツールチップがはみ出している: \(tooltip.frame) / \(chart.frame)")
+
+        // 同じラップをもう一度タップすると選択が外れ、ツールチップも消える
+        tapChart(app, chart, bias: 1.0)
+        XCTAssertTrue(app.staticTexts["バーをタップするとラップの詳細が出ます"]
+            .waitForExistence(timeout: 5), "選択が解除されていない")
     }
 
     /// もう一方のセッションと、ダークモードの見た目も残す（目視確認用）。
