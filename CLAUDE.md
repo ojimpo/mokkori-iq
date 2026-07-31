@@ -16,7 +16,7 @@ Phase 1 は実機 XIAO nRF52840 Sense（股間装着）への移植と実デー�
 - analysis/ : 探索スクリプト・チューニングスクリプト・生成図・findings.md
 - results/ : 評価結果 CSV（セッション別・被験者別）
 - firmware/ : 実機ファーム (Arduino/Seeed nRF52)。imu_bringup = IMU ブリングアップ
-- tools/ : ホスト側ツール (pyserial)。serial_capture.py = ストリーム取得/検証、flash_dump.py = フラッシュ記録の吸い出し/変換、flash_gui.py = flash_dump を包む大ボタンGUI(Tkinter)
+- tools/ : ホスト側ツール (pyserial)。serial_capture.py = ストリーム取得/検証、flash_dump.py = フラッシュ記録の吸い出し/変換、flash_gui.py = flash_dump を包む大ボタンGUI(Tkinter)、codec_check.py + codec_shim.c = ファームの圧縮コーデックをホストでビルドして実データで検証
 - DEVLOG.md : 作業日誌 (Cosense「mokkori-iq 進捗ログ」のミラー)
 
 ## 作業日誌の運用 (2026-07-11 開始、pulse-pump と同じ)
@@ -59,7 +59,9 @@ PATH="$PWD/.venv/bin:$PATH" arduino-cli compile --fqbn Seeeduino:nrf52:xiaonRF52
 # ここで RESET を2回押して /Volumes/XIAO-SENSE を出す
 PATH="$PWD/.venv/bin:$PATH" arduino-cli upload -p /dev/cu.usbmodem101 \
   --fqbn Seeeduino:nrf52:xiaonRF52840Sense --input-dir /tmp/mk_build firmware/flash_logger
-.venv/bin/python tools/flash_dump.py --selftest 5         # ベンチ往復テスト
+.venv/bin/python tools/codec_check.py                     # 圧縮コーデックの往復検証（コーデックに触ったら必ず）
+.venv/bin/python tools/codec_check.py --sweep             # レコード長/バッファ/kブロックの比較表
+.venv/bin/python tools/flash_dump.py --selftest 5         # ベンチ往復テスト（先にERASEする点に注意）
 .venv/bin/python tools/flash_dump.py --pull data/swim/session01.csv   # 1泳ぎ吸い出し→保存→消去
 .venv/bin/python tools/flash_dump.py --times              # 時刻アンカーの一覧
 .venv/bin/python tools/flash_dump.py --set-time           # いまの時刻をアンカーとして打つ
@@ -113,7 +115,11 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
 プール実データ採取用。**VBUS にライブ追従**（リセット不要）: USB抜く=記録 / USB挿す=コンソール。
 これで「短く泳ぐ→更衣室でMacに挿して吸い出し→また泳ぐ」ループが成立。
 - 記録は**追記方式**。消去は明示 `ERASE` のみ（USBを抜いても自動消去しない＝うっかりデータ消失なし）
-- 6軸 int16 を 256B ページ（magic 0xA55A/count/seq + 20 sample）で QSPI に書込。52Hz で約52分／消去まで
+- 6軸 int16 を**圧縮して 1KB レコード**（magic `0xA55C`）で QSPI に書込。52Hz で**約2時間**／消去まで
+  （形式と根拠は `firmware/flash_logger/log_codec.h`、実装状況は下記「記録時間の延長」節）。
+  旧形式の生ページ（magic `0xA55A`, 20 sample/256B）も読めるので、ファーム更新に ERASE は不要
+- **圧縮はデバイスの外から見えない**: `DUMP` も BLE も本体側でデコードしてから今まで通りの生 int16 を吐く。
+  `flash_dump.py` / `ble_probe.py` / Swift アプリは無変更（デコーダを3言語に増やさないため）
 - **時刻アンカーページ**（magic `0xA55B`, count=0, `[8:16] epoch_ms u64` `[16:20] sample_index u32`
   `[20:24] millis u32`）が同じ追記ストリームに混ざる。**サンプルページのバイト列は不変**なので
   Phase 0 パイプラインはそのまま動く。ページ形式は `firmware/flash_logger/log_format.h`
@@ -487,12 +493,35 @@ sudo usermod -aG dialout $USER                              # シリアル権限
   ただしそれは「今の検出器が鈍感」というだけなので、線は**センサのノイズ床**で引く:
   加速度のノイズ RMS ≈ 0.46mg に対し、2bit は量子化 RMS 0.28mg で**ノイズ以下＝情報としては無損失**、
   3bit は 0.56mg でほぼ同等、**4bit は明確にセンサより粗い**（＝本当に捨てている）。
-- 実装は Rice エンコーダ（unary + k bit）＋ページ自己完結の維持（先頭に絶対サンプル、
-  k を6軸ぶんヘッダに、サンプル数を可変にする）。ホスト側は `flash_dump` にデコーダが要る。
-  **2026-07-28 時点で実装はしていない（検討のみ）。**
+- **実装済み (2026-07-31)。実測 5.16〜5.47 B/sample ＝ 123分・130分**（両セッションとも2時間超）。
+  詳細は「圧縮の実装 (2026-07-31)」節。
 - **フラッシュの載せ替えは不可**（ユーザー判断 2026-07-28: XIAO はこのまま使う）。
   P25Q16H は XIAO nRF52840 Sense のモジュール上に載っているので、容量を増やすには外付け SPI フラッシュを
   足すことになり、XIAO 据え置きの方針と合わない。**52Hz 2時間の現実解は圧縮だけ**。
+
+### 圧縮の実装 (2026-07-31、実機検証済み)
+コーデックは `firmware/flash_logger/log_codec.h`（**素の C。Arduino ヘッダに依存しない**ので
+ホストでそのままビルドして実データを流せる）。1次差分 → zigzag → Rice、下位2bit切り捨て。
+- **実測 5.47 B/sample = 123分 (6/21換算) / 5.16 = 130分 (7/28換算)**。両方とも2時間超。
+- **`tools/codec_check.py`**: ファーム本体の `log_codec.h` を共有ライブラリにビルドして実データ2セッションを流し、
+  ①往復がビット一致（= `(生>>2)<<2`）②達成 B/sample ③アンカーと旧生ページを混ぜたフラッシュ像の走査
+  を検証する。**コーデックに触ったら必ず実行**。`--sweep` でレコード長・バッファ・kブロックの表が出る。
+- **サイズは測って決めた**（`--sweep`）: 1KBレコード（ヘッダ24Bを薄める）＋**384サンプルバッファ**
+  （ここが律速だった。256だと5分損する）。2KBに伸ばしても改善しない。
+  **2次差分は悪化**（5.75 B/sample）したので1次のまま。k をレコード内64サンプルごとに取り直すのは
+  ほぼ収支ゼロだが、信号が非定常になっても崩れないので残してある。
+- **停電で失うのはバッファぶん（約7秒）だけ**。USB挿し・BLE接続・時間切れ・満杯の通常終了では必ず吐き出す。
+  スイッチを切るのは上がった後なので実害なし。
+- **`capacity_samples()` は実測密度からの外挿**（固定比率を仮定しない）。泳ぎ 6.3 / 更衣・休憩 4.4 B/sample と
+  データ依存なので、本体が自分の消費ペースを測ってアプリに出す。`INFO` にも `bytes_per_sample` と
+  `recordable_min` が出る。
+- **実機で確認 (2026-07-31)**: ①旧ファームの生ページ 108,218 サンプルを新ファームがそのまま読めた
+  （`bytes_per_sample=12.81`）②`TESTLOG 20` の追記が 1040 サンプルぴったり・新規分は 2.95 B/sample
+  （机上静止なので泳ぎより縮む）③新規分は**下位2bitが100%ゼロ**・旧ぶんはランダム＝境界が一致
+  ④`|acc|`=0.9985g（std 0.0005）で切り捨ての影響は見えない ⑤時刻アンカーを圧縮レコードの間に2つ挟んで
+  サンプル差 416 = 8.0秒 ×52Hz ぴったり、挟んだ後に吸い出しても既存サンプルはバイト一致。
+- **未検証: BLE 経由の吸い出し**（`ble_probe.py --pull` は macOS の TCC で Terminal.app からしか動かない）。
+  BLE のフレーム組み立ては `read_record()` を USB ダンプと共有しているので、経路自体は同じコードを通る。
 
 **平均のトレードオフ（「フィルタになって精度が上がる」わけではない）**:
 - **精度は上がらない**。理屈ではノイズが √4 = 2倍良くなるが、検出器は後段でもっと強い平滑
