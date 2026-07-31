@@ -80,21 +80,27 @@ static const float    ADC_REF_MV   = 3000.0f;   // AR_INTERNAL_3_0
 static const float    ADC_FULL     = 4096.0f;   // 12-bit
 static const uint16_t VBAT_FULL_MV = 4150;      // charger tapers near 4.2V
 
-// The divider is high-impedance (~340k looking out) and sits disconnected
-// between measurements, so the ADC input needs real time to settle -- with the
-// 3 ms this used to have, readings alternated between 3715 and 4107 mV
-// depending on the charge left over from the previous call (measured 2026-07-31).
+// **analogSampleTime(40) is not optional here.** The divider looks like
+// ~340k (1M || 0.51M) to the ADC, and the core's default acquisition time is
+// 3 us -- the datasheet wants 40 us above ~100k. With 3 us the sampling
+// capacitor never charges, so a conversion mostly returns whatever the
+// previous one left behind: readings stuck to either 3715 or 4103 mV at
+// random, and averaging 32 of them didn't help because consecutive reads of
+// the same channel just agree with each other (measured on hardware
+// 2026-07-31 -- the first guess, a too-short settle delay, was wrong).
 static uint16_t read_vbat_mv() {
   pinMode(VBAT_ENABLE, OUTPUT);
   digitalWrite(VBAT_ENABLE, LOW);               // connect the divider
   pinMode(PIN_VBAT, INPUT);
   analogReference(AR_INTERNAL_3_0);
   analogReadResolution(12);
-  delay(25);                                     // let the divider settle
+  analogSampleTime(40);                          // us -- for the 340k source
+  delay(10);                                     // let the divider settle
   for (int i = 0; i < 4; i++) (void)analogRead(PIN_VBAT);   // discard
   uint32_t acc = 0;
   for (int i = 0; i < 32; i++) acc += analogRead(PIN_VBAT);
   digitalWrite(VBAT_ENABLE, HIGH);              // disconnect (stop the leak)
+  analogSampleTime(3);                           // leave the default for others
   float raw = acc / 32.0f;
   return (uint16_t)(raw * ADC_REF_MV / ADC_FULL * VBAT_DIVIDER + 0.5f);
 }
