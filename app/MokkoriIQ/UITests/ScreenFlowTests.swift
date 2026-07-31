@@ -244,9 +244,15 @@ final class ScreenFlowTests: XCTestCase {
         app.tabBars.buttons["デバイス"].tap()
         XCTAssertTrue(app.staticTexts["Mokkori IQ"].waitForExistence(timeout: 10),
                       "デバイス画面が出ない")
-        // BLE 未実装なので「未接続」と出し、本体が要る操作は押せない
-        XCTAssertTrue(app.staticTexts["未接続"].exists, "接続状態が出ていない")
-        XCTAssertTrue(app.buttons["ログを取り込む"].isEnabled, "取り込みが押せない")
+        // シミュレータに BLE は無いので本体には繋がらない。**繋がらない理由を
+        // 画面に出したうえで**、本体が要る操作を押せなくしてあることを確かめる
+        // （黙って空欄にして押せる、が一番まずい）。
+        let reasons = ["この端末は Bluetooth LE に対応していません", "Bluetooth がオフです",
+                       "Bluetooth の使用が許可されていません", "本体をさがしています", "未接続"]
+        XCTAssertTrue(reasons.contains { app.staticTexts[$0].exists },
+                      "未接続の理由が出ていない")
+        XCTAssertTrue(app.buttons["CSV から取り込む"].isEnabled, "CSV 取り込みが押せない")
+        XCTAssertFalse(app.buttons["本体から吸い出す"].isEnabled, "未接続でも吸い出しが押せる")
         XCTAssertFalse(app.buttons["時刻を合わせる"].isEnabled, "未接続でも時刻合わせが押せる")
         XCTAssertFalse(app.buttons["メモリーを消去"].isEnabled, "未接続でも消去が押せる")
         dump(app, "device_tab")

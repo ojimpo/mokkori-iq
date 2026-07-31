@@ -4,21 +4,25 @@ import MokkoriCore
 
 /// デバイスタブ: Mokkori IQ 本体まわりを1画面にまとめる。
 ///
-/// **BLE (Phase D) がまだ無い**ので、いま実際に動くのは
-///   - ログの取り込み（「ファイル」アプリ経由。タブレットで吸い出した CSV）
-///   - 振動フィードバックの設定（アプリに保存。接続時に本体へ送る）
-/// の2つだけ。バッテリー・メモリー・時刻合わせ・メモリー消去は本体と話す必要があるので、
-/// **未接続であることを画面に出したうえで**操作を無効にしてある（黙って空欄にしない）。
+/// BLE (Phase D) が入ったので、この画面はすべて本体と話す:
+///   - 記録の吸い出し（水から上がってその場で。タブレットが要らない）
+///   - バッテリー・メモリーの残り
+///   - 時刻合わせ（本体は電源 OFF 中に時計を保持できないのでスマホが渡す）
+///   - メモリー消去
+///   - 振動フィードバックの設定と、パターンの体感テスト
+/// 「ファイル」からの CSV 取り込みは、タブレットで吸い出した過去ぶんのために残す。
 struct DeviceView: View {
     @Environment(SessionStore.self) private var store
     @Environment(DeviceSettings.self) private var settings
+    @Environment(BLEManager.self) private var ble
 
     @State private var showImporter = false
     @State private var importing = false
     @State private var importError: String?
     @State private var importedName: String?
-    /// 本体から読んだ値。BLE が入るまでは常に空。
-    @State private var status = DeviceStatus()
+    @State private var confirmErase = false
+
+    private var status: DeviceStatus { ble.status }
 
     var body: some View {
         NavigationStack {
@@ -29,6 +33,7 @@ struct DeviceView: View {
                 hapticSection
             }
             .navigationTitle("Mokkori IQ")
+            .task { ble.start() }
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: [.commaSeparatedText, .plainText]) { res in
                 guard case .success(let url) = res else { return }
@@ -50,30 +55,81 @@ struct DeviceView: View {
             } message: {
                 Text(importError ?? "")
             }
+            .alert("エラー", isPresented: .init(
+                get: { ble.lastError != nil },
+                set: { if !$0 { ble.lastError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(ble.lastError ?? "")
+            }
+            .confirmationDialog("本体のメモリーを消去しますか？",
+                                isPresented: $confirmErase, titleVisibility: .visible) {
+                Button("消去する", role: .destructive) { ble.erase() }
+                Button("やめる", role: .cancel) {}
+            } message: {
+                Text(status.recordedSeconds.map {
+                    "記録 \(fmtClock($0)) ぶんが消えます。取り消せません。"
+                } ?? "記録が消えます。取り消せません。")
+            }
         }
     }
 
     // MARK: - 接続
 
+    /// 本体は電源が入っている間ずっとアドバタイズしているので、この画面を開けば
+    /// 勝手に繋がる。繋がっていないときは**理由を出す**（黙って空欄にしない）。
     private var connectionSection: some View {
         Section {
             HStack(spacing: 12) {
-                Image(systemName: "sensor.tag.radiowaves.forward")
+                Image(systemName: ble.isConnected
+                      ? "sensor.tag.radiowaves.forward.fill"
+                      : "sensor.tag.radiowaves.forward")
                     .font(.title2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ble.isConnected ? Metric.stroke : .secondary)
                     .frame(width: 32)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("未接続")
-                        .font(.headline)
-                    Text("BLE 接続は未実装です（Phase D）")
+                    Text(connectionTitle).font(.headline)
+                    Text(connectionDetail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if ble.connection == .scanning || ble.connection == .connecting {
+                    ProgressView()
+                }
             }
             .padding(.vertical, 2)
         } footer: {
-            Text("いまは水から上がったあと、タブレットで吸い出した CSV を取り込みます。BLE が入ると、この画面から直接吸い出し・時刻合わせ・消去ができます。")
+            if let action = ble.lastAction {
+                Text(action)
+            } else {
+                Text("本体の電源が入っていれば自動で繋がります。水中では電波が届かないので、上がってから操作してください。")
+            }
+        }
+    }
+
+    private var connectionTitle: String {
+        switch ble.connection {
+        case .connected:    return ble.deviceName ?? "Mokkori IQ"
+        case .connecting:   return "接続中…"
+        case .scanning:     return "本体をさがしています"
+        case .poweredOff:   return "Bluetooth がオフです"
+        case .unauthorized: return "Bluetooth の使用が許可されていません"
+        case .unsupported:  return "この端末は Bluetooth LE に対応していません"
+        case .idle:         return "未接続"
+        }
+    }
+
+    private var connectionDetail: String {
+        switch ble.connection {
+        case .connected:
+            if status.isErasing { return "メモリーを消去しています…" }
+            if status.isFull { return "メモリーが満杯です。吸い出してから消去してください" }
+            return "接続済み（記録は一時停止しています）"
+        case .scanning:     return "本体のスイッチが入っているか確認してください"
+        case .poweredOff:   return "設定 → Bluetooth をオンにしてください"
+        case .unauthorized: return "設定 → Mokkori IQ → Bluetooth を許可してください"
+        default:            return "—"
         }
     }
 
@@ -110,38 +166,92 @@ struct DeviceView: View {
                 .padding(.bottom, 8)
             }
 
+            if let t = ble.transfer {
+                transferRow(t)
+            } else {
+                Button {
+                    pull()
+                } label: {
+                    HStack {
+                        Label("本体から吸い出す", systemImage: "antenna.radiowaves.left.and.right")
+                        Spacer()
+                        if importing { ProgressView() }
+                    }
+                }
+                .disabled(!ble.isConnected || (status.samples ?? 0) == 0 || importing)
+            }
+
             Button {
                 showImporter = true
             } label: {
-                HStack {
-                    Label("ログを取り込む", systemImage: "square.and.arrow.down")
-                    Spacer()
-                    if importing { ProgressView() }
-                }
+                Label("CSV から取り込む", systemImage: "square.and.arrow.down")
             }
-            .disabled(importing)
-
-            Button {
-            } label: {
-                Label("本体から吸い出す（BLE）", systemImage: "antenna.radiowaves.left.and.right")
-            }
-            .disabled(true)
+            .disabled(importing || ble.transfer != nil)
 
             Button(role: .destructive) {
+                confirmErase = true
             } label: {
                 Label("メモリーを消去", systemImage: "trash")
             }
-            .disabled(true)
+            .disabled(!ble.isConnected || status.isErasing || ble.transfer != nil)
         } header: {
             Text("記録データ")
         } footer: {
             if let name = importedName {
-                Text("「\(name)」を取り込みました。ログタブで開けます")
+                Text("「\(name)」を取り込みました。ログタブで開けます。本体のメモリーは消していないので、確認してから消去してください")
             } else {
-                Text("取り込んだログはログタブに並びます（\(store.sessions.count) 件）。フラッシュは 2MB で、52Hz なら約52分ぶん記録できます。消去は明示的に行ったときだけで、USB を抜いても消えません。")
+                Text("取り込んだログはログタブに並びます（\(store.sessions.count) 件）。消去は明示的に行ったときだけで、吸い出しただけでは消えません。")
             }
         }
         .headerProminence(.increased)
+    }
+
+    /// 吸い出しは 2MB 近くを BLE で流すので分単位でかかる。何 % かだけでなく
+    /// **実測スループットから出した残り時間**を出す（見積もりを勘で盛らない）。
+    private func transferRow(_ t: BLEManager.Transfer) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("吸い出し中").font(.subheadline)
+                Spacer()
+                Text("\(Int((t.fraction * 100).rounded()))%")
+                    .font(.subheadline.weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Metric.distance)
+            }
+            ProgressView(value: t.fraction).tint(Metric.distance)
+            HStack {
+                Text(t.remainingSeconds.map { "残り約 \(fmtClock($0))" } ?? "見積もり中…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("中止") { ble.cancelPull() }
+                    .font(.caption)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func pull() {
+        importing = true
+        ble.pullLog { result in
+            switch result {
+            case .failure(let e):
+                importing = false
+                importError = e.localizedDescription
+            case .success(let rec):
+                let stamp = fileStamp(status.startEpoch ?? Date())
+                Task {
+                    do {
+                        let meta = try await store.importRaw(
+                            rec, name: "swim_\(stamp).ble", startEpoch: status.startEpoch)
+                        importedName = meta.sourceFilename
+                    } catch {
+                        importError = error.localizedDescription
+                    }
+                    importing = false
+                }
+            }
+        }
     }
 
     // MARK: - 本体
@@ -162,17 +272,24 @@ struct DeviceView: View {
             .padding(.vertical, 8)
 
             Button {
+                ble.syncTime()
             } label: {
                 Label("時刻を合わせる",
                       systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
             }
-            .disabled(true)
+            .disabled(!ble.isConnected)
         } header: {
             Text("本体")
         } footer: {
-            Text(status.isKnown
-                 ? "本体の INFO から読んだ値です"
-                 : "未接続なので読めていません。時刻合わせが入ると、ログのアップロード時に時刻を手で入れる必要がなくなります。")
+            if !ble.isConnected {
+                Text("未接続なので読めていません。")
+            } else if let a = status.lastAnchor {
+                Text("時刻は合っています（最後に合わせたのは \(fmtDayTime(a))）。泳ぎ始めの時刻が自動で入るので、Strava へ出すときに手で入れる必要はありません。")
+            } else if status.charging == true {
+                Text("充電中です。時刻はまだ合っていません — 泳ぐ前に合わせてください。")
+            } else {
+                Text("時刻がまだ合っていません。本体は電源を切ると時計を忘れるので、泳ぐ前に一度合わせてください。")
+            }
         }
         .headerProminence(.increased)
     }
@@ -183,20 +300,33 @@ struct DeviceView: View {
         @Bindable var settings = settings
         return Section {
             ForEach(DeviceSettings.HapticPattern.allCases) { p in
-                Picker(selection: .init(
-                    get: { settings.haptic.trigger(p) ?? 0 },
-                    set: { settings.haptic.setTrigger(p, $0 == 0 ? nil : $0) })) {
-                    Text("未設定").tag(0)
-                    ForEach(DeviceSettings.distanceChoices, id: \.self) { m in
-                        Text("\(m)m ごと").tag(m)
+                HStack {
+                    Picker(selection: .init(
+                        get: { settings.haptic.trigger(p) ?? 0 },
+                        set: {
+                            settings.haptic.setTrigger(p, $0 == 0 ? nil : $0)
+                            ble.sendHaptics(settings.haptic)
+                        })) {
+                        Text("未設定").tag(0)
+                        ForEach(DeviceSettings.distanceChoices, id: \.self) { m in
+                            Text("\(m)m ごと").tag(m)
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(p.label)
+                            Text(p.shape)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(p.label)
-                        Text(p.shape)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    // パターンは体感で選ぶものなので、その場で鳴らせるようにする
+                    Button {
+                        ble.testVibrate(p, strengthPercent: settings.haptic.strengthPercent)
+                    } label: {
+                        Image(systemName: "play.circle")
                     }
+                    .buttonStyle(.borderless)
+                    .disabled(!ble.isConnected)
                 }
             }
 
@@ -212,13 +342,8 @@ struct DeviceView: View {
                     get: { Double(settings.haptic.strengthPercent) },
                     set: { settings.haptic.strengthPercent = Int($0.rounded()) }),
                        in: 20...100, step: 10)
+                    .onChange(of: settings.haptic) { _, h in ble.sendHaptics(h) }
             }
-
-            Button {
-            } label: {
-                Label("試しに振動させる", systemImage: "waveform")
-            }
-            .disabled(true)
 
             if settings.haptic.hasDuplicateDistance {
                 Label("同じ距離を2つのパターンに割り当てています。両方鳴るので区別できません",
@@ -229,8 +354,16 @@ struct DeviceView: View {
         } header: {
             Text("振動フィードバック")
         } footer: {
-            Text("いまの設定: \(settings.hapticSummary)\n\nパターンは3種類に固定して、それぞれに「何mごとに鳴らすか」を割り当てます（未設定なら鳴りません）。強さではなく回数と長さで分けているのは、水中・水着越しでは強弱を聞き分けにくいためです。\n\n**まだ鳴りません**: 実機に振動モーターがまだ載っていない（配線が未実装）のと、BLE で設定を送る仕組みが未実装のためです。設定はアプリに保存され、両方そろったら送ります。")
+            Text("いまの設定: \(settings.hapticSummary)\n\nパターンは3種類に固定して、それぞれに「何mごとに鳴らすか」を割り当てます（未設定なら鳴りません）。強さではなく回数と長さで分けているのは、水中・水着越しでは強弱を聞き分けにくいためです。\n\n**泳いでいる最中はまだ鳴りません**: 実機に振動モーターが載っておらず（配線が未実装）、距離を数えるコーザルな壁カウンタも本体側に入っていないためです。設定の送信と体感テストはここから動きます。")
         }
         .headerProminence(.increased)
     }
+}
+
+/// 吸い出したセッションのファイル名に使う日時。CSV 経由と同じ `swim_YYYYMMDD_HHMMSS`
+/// の形にそろえる（一覧の日付推定がファイル名を見るため）。
+private func fileStamp(_ d: Date) -> String {
+    let f = DateFormatter()
+    f.dateFormat = "yyyyMMdd_HHmmss"
+    return f.string(from: d)
 }

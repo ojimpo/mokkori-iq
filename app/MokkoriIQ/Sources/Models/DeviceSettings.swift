@@ -106,8 +106,9 @@ final class DeviceSettings {
     }
 }
 
-/// 本体から読んだ状態（バッテリー・メモリー）。BLE がつながるまでは常に nil。
-/// `INFO` コマンドが返す値と同じ並びにしてある（`tools/flash_dump.py --info`）。
+/// 本体から読んだ状態（バッテリー・メモリー）。未接続のあいだは全部 nil。
+/// BLE の状態 characteristic (…0003) が返す 36 B のブロブをそのまま写したもので、
+/// USB の `INFO` が出す値と同じ並び（`tools/flash_dump.py --info`）。
 struct DeviceStatus: Equatable {
     var batteryPercent: Int?
     var batteryMillivolts: Int?
@@ -117,8 +118,23 @@ struct DeviceStatus: Equatable {
     var capacitySamples: Int?
     /// 記録のサンプルレート（残り時間の計算に使う）
     var sampleRate: Double = 52.0
+    /// 本体のいまの様子。記録中はスマホが繋がっていないときなので、繋いでいる
+    /// あいだ isLogging は落ちる（本体はセントラル接続中は記録を止める）
+    var isLogging = false
+    var isFull = false
+    var isErasing = false
+    /// 最後に打った時刻アンカー（「サンプル K = この時刻」）。未設定なら nil
+    var lastAnchor: Date?
+    var lastAnchorIndex: Int?
 
     var isKnown: Bool { batteryPercent != nil || samples != nil }
+
+    /// アンカーとサンプルレートから、記録の先頭（サンプル0）の絶対時刻を逆算する。
+    /// Strava へ出すときの「泳ぎ始め」の手入力がこれで要らなくなる。
+    var startEpoch: Date? {
+        guard let a = lastAnchor, let k = lastAnchorIndex, sampleRate > 0 else { return nil }
+        return a.addingTimeInterval(-Double(k) / sampleRate)
+    }
 
     var usedFraction: Double? {
         guard let s = samples, let c = capacitySamples, c > 0 else { return nil }

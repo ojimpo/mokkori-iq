@@ -42,6 +42,11 @@ targets:
       properties:
         # OAuth はアプリ内で行わない（Strava への投稿は NAS のゲートウェイ経由）
         # ため、カスタム URL スキームの登録は不要。
+        # 本体（XIAO nRF52840）とだけ話す。バックグラウンド動作は要らない
+        # ＝繋ぐのは水から上がってアプリを開いたときだけなので、
+        # UIBackgroundModes の bluetooth-central は入れない。
+        NSBluetoothAlwaysUsageDescription:
+          Mokkori IQ 本体から泳ぎの記録を吸い出し、時刻を合わせるために使います。
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         CFBundleDisplayName: Mokkori IQ

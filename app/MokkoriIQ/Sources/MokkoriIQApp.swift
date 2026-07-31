@@ -5,6 +5,7 @@ struct MokkoriIQApp: App {
     @State private var store = SessionStore()
     @State private var strava = StravaService()
     @State private var device = DeviceSettings()
+    @State private var ble = BLEManager()
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,7 @@ struct MokkoriIQApp: App {
                 .environment(store)
                 .environment(strava)
                 .environment(device)
+                .environment(ble)
         }
     }
 }

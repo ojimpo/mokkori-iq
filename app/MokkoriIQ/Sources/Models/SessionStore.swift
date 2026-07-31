@@ -83,6 +83,18 @@ final class SessionStore {
         return meta
     }
 
+    /// BLE で本体から吸い出した生サンプルを取り込む。届くのは raw.bin と同じ
+    /// int16 の並びなので、CSV 経由と**同じ解析結果**になる（量子化も経路も同一）。
+    /// 時刻アンカーが本体にあれば、それが泳ぎ始めの絶対時刻としてそのまま入る。
+    @MainActor
+    func importRaw(_ rec: RawRecording, name: String, startEpoch: Date?) async throws -> Meta {
+        let meta = try await Task.detached(priority: .userInitiated) {
+            try self.persist(rec: rec, csvFallback: nil, name: name, startEpoch: startEpoch)
+        }.value
+        sessions.insert(meta, at: 0)
+        return meta
+    }
+
     private func processCSV(from url: URL) throws -> Meta {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -90,42 +102,52 @@ final class SessionStore {
         guard let data = try? Data(contentsOf: url) else {
             throw ImportError.unreadable
         }
-
-        let sess: SwimSession
-        var storage = "bin"
-        var rec: RawRecording?
         do {
-            let r = try RawRecording.encode(csvData: data)
-            rec = r
-            sess = r.decode()
-        } catch {
+            return try persist(rec: try RawRecording.encode(csvData: data),
+                               csvFallback: nil, name: url.lastPathComponent,
+                               startEpoch: nil)
+        } catch is RawRecording.CodecError {
             // int16 に丸め直せない形式（記録側の変更など）。解析できるなら
             // CSV のまま保存して取り込む。ヘッダ違いはここで弾かれる。
-            storage = "csv"
-            sess = try SwimSession.parseCSV(data)
+            return try persist(rec: nil, csvFallback: data, name: url.lastPathComponent,
+                               startEpoch: nil)
+        }
+    }
+
+    /// 解析してサマリをキャッシュし、生データと一緒に保存する。CSV 経由も
+    /// BLE 経由もここに集約する（片方だけ挙動が変わる事故を防ぐ）。
+    private func persist(rec: RawRecording?, csvFallback: Data?, name: String,
+                         startEpoch: Date?) throws -> Meta {
+        let sess: SwimSession
+        if let rec {
+            sess = rec.decode()
+        } else if let csvFallback {
+            sess = try SwimSession.parseCSV(csvFallback)
+        } else {
+            throw ImportError.unreadable
         }
 
         let d = WallDetector.detectWalls(sess)
         let report = SwimReporter.makeReport(sess, detection: d)
 
         let meta = Meta(id: UUID(),
-                        sourceFilename: url.lastPathComponent,
+                        sourceFilename: name,
                         importedAt: Date(),
                         sampleCount: sess.count,
                         odr: rec?.odr ?? sess.fs,
-                        storage: storage,
+                        storage: rec != nil ? "bin" : "csv",
                         distance: report.distance,
                         movingTime: report.movingTime,
                         elapsed: report.elapsed,
-                        startEpoch: nil)
+                        startEpoch: startEpoch)
 
         let fm = FileManager.default
         let d0 = dir(meta.id)
         try fm.createDirectory(at: d0, withIntermediateDirectories: true)
         if let rec {
             try rec.binaryData().write(to: d0.appendingPathComponent("raw.bin"))
-        } else {
-            try data.write(to: d0.appendingPathComponent("raw.csv"))
+        } else if let csvFallback {
+            try csvFallback.write(to: d0.appendingPathComponent("raw.csv"))
         }
         try writeMeta(meta)
         return meta
