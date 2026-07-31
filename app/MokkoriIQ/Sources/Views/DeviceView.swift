@@ -220,8 +220,13 @@ struct DeviceView: View {
             }
             ProgressView(value: t.fraction).tint(Metric.distance)
             HStack {
-                Text(t.remainingSeconds.map { "残り約 \(fmtClock($0))" } ?? "見積もり中…")
+                // 受信量は常に出す。残り時間は実測が溜まってから足す
+                // （プレースホルダを出すくらいなら実数を出す）
+                Text(fmtClock(Double(t.received) / max(1, status.sampleRate))
+                     + " / " + fmtClock(Double(t.total) / max(1, status.sampleRate))
+                     + (t.remainingSeconds.map { "・残り約 \(fmtClock($0))" } ?? ""))
                     .font(.caption)
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("中止") { ble.cancelPull() }

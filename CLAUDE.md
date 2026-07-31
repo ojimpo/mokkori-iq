@@ -174,6 +174,16 @@ LSM6DS3TR-C を 104Hz で読み `millis,ax,ay,az,gx,gy,gz` を USB CSV 出力（
 - ERASE と VIB は BLE コールバックから直接やらない（数十秒ブロックする・フラッシュは再入不可）。
   フラグを立てて `loop()` で実行し、進行中はフラグを状態 blob に出す
 - `Bluefruit.configPrphBandwidth(BANDWIDTH_MAX)` で MTU 247 → 1フレーム 20 サンプル（=1ページぶん）
+- **スループット実測 (2026-07-31): ≧37 kB/s。満杯 2MB でも1分弱**（187KB が5秒以下）
+- **落とし穴: `getMtu()` はコネクトのコールバックで読んではいけない**。iOS が MTU を交渉するのは
+  **サービス探索のあと**なので、コネクト時点では既定の 23 のまま＝`(23-3-4)/12 = 1` で
+  **1フレーム1サンプル**になり 4.2 kB/s まで落ちる（実際に踏んだ）。
+  フレームサイズは `DUMP_START` を受けた時点で計算する（`update_frame_size()`）
+- `scan_log()` はキャッシュしてある。状態 blob は吸い出し中に毎秒2回出るが、scan は使用済みページを
+  全部読む（満杯なら 8192 回）。**セントラル接続中はログが増えない**（記録を止めているので
+  log_session / append_anchor / do_erase のどれも起きえない）ので安全にキャッシュできる。
+  invalidate はこの3箇所だけ
+- `requestConnectionParameter(12)` で接続間隔を iOS 既定の 30ms → 15ms に
 
 ### 実データ取込 (device CSV → Phase 0)
 - `dataio.load_swim_csv(path)`: flash_dump CSV を session dict 化。**g→m/s²・dps→rad/s に変換**（Brunner/検出器閾値の単位に合わせる）、fs は t から自動推定

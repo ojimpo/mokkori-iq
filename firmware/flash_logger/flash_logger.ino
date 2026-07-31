@@ -178,8 +178,8 @@ static void led(bool r, bool g, bool b) {
 // End of log = first page whose magic isn't one of ours (erased = 0xFFFF).
 // Partial pages (count < 20) are allowed mid-log so sessions can be appended,
 // and anchor pages (0xA55B) carry no samples but still consume a page.
-static void scan_log(uint32_t *out_pages, uint32_t *out_samples,
-                     uint32_t *out_end, Anchor *out_last, uint32_t *out_anchors) {
+static void scan_log_raw(uint32_t *out_pages, uint32_t *out_samples,
+                         uint32_t *out_end, Anchor *out_last, uint32_t *out_anchors) {
   uint32_t addr = 0, pages = 0, samples = 0, anchors = 0, size = flash.size();
   uint8_t hdr[24];
   while (addr + PAGE_SIZE <= size) {
@@ -207,6 +207,34 @@ static void scan_log(uint32_t *out_pages, uint32_t *out_samples,
   if (out_samples) *out_samples = samples;
   if (out_end) *out_end = addr;
   if (out_anchors) *out_anchors = anchors;
+}
+
+// Scanning walks every used page, so a full flash costs ~8k reads. The BLE
+// status blob republishes twice a second while dumping, which would spend that
+// walk on data that cannot have changed -- the log only grows from log_session
+// / append_anchor / do_erase, and all three are impossible while we're serving
+// a central. Cache it and invalidate at those three places.
+static bool     g_scan_valid = false;
+static uint32_t g_scan_pages, g_scan_samples, g_scan_end, g_scan_anchors;
+static Anchor   g_scan_last;
+
+static void scan_invalidate() { g_scan_valid = false; }
+
+static void scan_log(uint32_t *out_pages, uint32_t *out_samples,
+                     uint32_t *out_end, Anchor *out_last, uint32_t *out_anchors) {
+  if (!g_scan_valid) {
+    g_scan_last.epoch_ms = 0;
+    g_scan_last.sample_index = 0;
+    g_scan_last.millis_at_sync = 0;
+    scan_log_raw(&g_scan_pages, &g_scan_samples, &g_scan_end, &g_scan_last,
+                 &g_scan_anchors);
+    g_scan_valid = true;
+  }
+  if (out_pages) *out_pages = g_scan_pages;
+  if (out_samples) *out_samples = g_scan_samples;
+  if (out_end) *out_end = g_scan_end;
+  if (out_anchors) *out_anchors = g_scan_anchors;
+  if (out_last) *out_last = g_scan_last;
 }
 
 // How many samples fit in the flash, for the phone's "recordable time" gauge.
@@ -237,6 +265,7 @@ static bool append_anchor(uint64_t epoch_ms) {
   memcpy(buf + 16, &samples, 4);
   memcpy(buf + 20, &ms, 4);
   flash.writeBuffer(addr, buf, PAGE_SIZE);
+  scan_invalidate();
   return true;
 }
 
@@ -456,16 +485,27 @@ static void ble_connect_cb(uint16_t conn_handle) {
   BLEConnection *c = Bluefruit.Connection(conn_handle);
   if (c) {
     c->requestPHY();                          // 2M PHY if the phone agrees
-    uint16_t mtu = c->getMtu();
-    // frame = 4 B absolute index + N samples * 12 B, capped by one flash page
-    uint16_t payload = (mtu > 7) ? (mtu - 3 - 4) : 12;
-    uint16_t n = payload / 12;
-    if (n < 1) n = 1;
-    if (n > SAMPLES_PER_PAGE) n = SAMPLES_PER_PAGE;
-    g_frame_samples = (uint8_t)n;
+    // iOS opens at a 30 ms interval, which halves the dump rate for no reason:
+    // we're plugged into nothing and the connection lasts a minute or two.
+    // 15 ms (12 x 1.25 ms) is the fastest iOS accepts.
+    c->requestConnectionParameter(12);
   }
   g_dump_active = false;
   publish_status();
+}
+
+// Frame = 4 B absolute sample index + N samples * 12 B, capped at one flash
+// page. **Read the MTU when the dump starts, not on connect**: iOS negotiates
+// it during service discovery, so at connect time getMtu() still says 23 and
+// we'd ship one sample per notification (measured 4.2 kB/s that way).
+static void update_frame_size() {
+  uint16_t mtu = 23;
+  BLEConnection *c = Bluefruit.Connection(g_conn);
+  if (c) mtu = c->getMtu();
+  uint16_t n = (mtu > 7) ? (mtu - 3 - 4) / 12 : 1;
+  if (n < 1) n = 1;
+  if (n > SAMPLES_PER_PAGE) n = SAMPLES_PER_PAGE;
+  g_frame_samples = (uint8_t)n;
 }
 
 static void ble_disconnect_cb(uint16_t conn_handle, uint8_t reason) {
@@ -525,6 +565,7 @@ static void control_write_cb(uint16_t conn_hdl, BLECharacteristic *chr,
     case OP_DUMP_START: {
       uint32_t from = 0;
       if (len >= 5) memcpy(&from, data + 1, 4);
+      update_frame_size();
       scan_log(&g_dump_pages, NULL, NULL, NULL, NULL);
       g_dump_page = 0;
       g_dump_abs = 0;
@@ -715,6 +756,7 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
     memcpy(buf + 2, &n, 2);
     flash.writeBuffer(addr, buf, PAGE_SIZE);
   }
+  scan_invalidate();
   return full;
 }
 
@@ -729,6 +771,7 @@ static void do_erase() {
   publish_status();
   flash.eraseChip();
   flash.waitUntilReady();
+  scan_invalidate();
   g_erasing = false;
   publish_status();
   led(1, 0, 0);

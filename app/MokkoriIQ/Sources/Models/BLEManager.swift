@@ -36,9 +36,11 @@ final class BLEManager: NSObject {
         var startedAt: Date
         var fraction: Double { total > 0 ? min(1, Double(received) / Double(total)) : 0 }
         /// 実測スループットから出す残り時間。マージンを勘で盛らない。
+        /// 満杯（約2MB）でも1分弱で終わるので、**出せるようになるまでの敷居は低くする**
+        /// ＝2秒待つ作りだと、短い記録では「見積もり中」のまま終わってしまう。
         var remainingSeconds: Double? {
             let elapsed = Date().timeIntervalSince(startedAt)
-            guard elapsed > 2, received > 0, received < total else { return nil }
+            guard elapsed > 0.7, received > 0, received < total else { return nil }
             return Double(total - received) * elapsed / Double(received)
         }
     }
