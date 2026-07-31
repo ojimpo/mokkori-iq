@@ -253,7 +253,8 @@ final class ScreenFlowTests: XCTestCase {
                       "未接続の理由が出ていない")
         XCTAssertTrue(app.buttons["CSV から取り込む"].isEnabled, "CSV 取り込みが押せない")
         XCTAssertFalse(app.buttons["本体から吸い出す"].isEnabled, "未接続でも吸い出しが押せる")
-        XCTAssertFalse(app.buttons["時刻を合わせる"].isEnabled, "未接続でも時刻合わせが押せる")
+        // 時刻合わせは接続時に自動でやるので、ボタンは「合わせ直す」用に残してある
+        XCTAssertFalse(app.buttons["いま合わせ直す"].isEnabled, "未接続でも時刻合わせが押せる")
         XCTAssertFalse(app.buttons["メモリーを消去"].isEnabled, "未接続でも消去が押せる")
         dump(app, "device_tab")
     }

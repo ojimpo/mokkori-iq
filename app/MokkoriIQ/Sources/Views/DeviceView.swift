@@ -276,10 +276,11 @@ struct DeviceView: View {
             }
             .padding(.vertical, 8)
 
+            // 自動で合うので普段は押さなくていい。手動は「いま合わせ直したい」用に残す。
             Button {
                 ble.syncTime()
             } label: {
-                Label("時刻を合わせる",
+                Label("いま合わせ直す",
                       systemImage: "clock.arrow.trianglehead.2.counterclockwise.rotate.90")
             }
             .disabled(!ble.isConnected)
@@ -289,11 +290,9 @@ struct DeviceView: View {
             if !ble.isConnected {
                 Text("未接続なので読めていません。")
             } else if let a = status.lastAnchor {
-                Text("時刻は合っています（最後に合わせたのは \(fmtDayTime(a))）。泳ぎ始めの時刻が自動で入るので、Strava へ出すときに手で入れる必要はありません。")
-            } else if status.charging == true {
-                Text("充電中です。時刻はまだ合っていません — 泳ぐ前に合わせてください。")
+                Text("時刻は接続したときに自動で合わせています（最後に合わせたのは \(fmtDayTime(a))）。泳ぎ始めの時刻が自動で入るので、Strava へ出すときに手で入れる必要はありません。")
             } else {
-                Text("時刻がまだ合っていません。本体は電源を切ると時計を忘れるので、泳ぐ前に一度合わせてください。")
+                Text("時刻を合わせています…（本体は電源を切ると時計を忘れるので、繋いだときに毎回合わせ直します）")
             }
         }
         .headerProminence(.increased)

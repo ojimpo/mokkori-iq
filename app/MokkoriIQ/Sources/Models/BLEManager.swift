@@ -77,6 +77,8 @@ final class BLEManager: NSObject {
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
     private var timeChar: CBCharacteristic?
+    /// 自動時刻合わせは1接続につき1回だけ判定する（状態ブロブは毎秒来るため）
+    private var autoSyncEvaluated = false
     private var statusChar: CBCharacteristic?
     private var dataChar: CBCharacteristic?
     private var controlChar: CBCharacteristic?
@@ -131,8 +133,9 @@ final class BLEManager: NSObject {
 
     // MARK: - 操作
 
-    /// 本体に「いまが何時か」を教える。本体は電源 OFF 中に時計を保持できないので、
-    /// サンプル番号と epoch の対応（アンカー）をフラッシュに追記させる。
+    /// 本体に「いまが何時か」を教える。本体は電源 OFF 中に時計を保持できないので
+    /// （スイッチが電池ごと切るため RTC も止まる）、サンプル番号と epoch の対応
+    /// ＝アンカーをフラッシュに追記させる。
     func syncTime() {
         guard let p = peripheral, let c = timeChar else { lastError = BLEError.notConnected.localizedDescription; return }
         var ms = UInt64((Date().timeIntervalSince1970 * 1000).rounded())
@@ -140,6 +143,23 @@ final class BLEManager: NSObject {
         p.writeValue(data, for: c, type: .withResponse)
         lastAction = "時刻を合わせました"
         readStatusSoon()
+    }
+
+    /// 繋がったら時刻合わせは黙ってやる。本体の記録は電源 ON のあいだ 52Hz で
+    /// 連続しているので、**記録の後ろに1本アンカーが刺さっていれば手前は全部逆算できる**
+    /// ＝繋いだ時点（＝上がった直後）に打つのがちょうどいい。手で押させると、
+    /// 押し忘れたぶんだけ Strava の開始時刻が手入力に戻ってしまう。
+    ///
+    /// ただし毎回打つと、泳いでいないのに近づいただけでアンカーが増える。
+    /// **前のアンカー以降に記録が伸びたときだけ**打つ（消去直後の 0 サンプルは
+    /// アンカーが無いので1本打つ＝これが記録の起点になる）。
+    private func autoSyncTimeIfNeeded() {
+        guard !autoSyncEvaluated, connection == .connected, timeChar != nil else { return }
+        guard let samples = status.samples, !status.isErasing else { return }
+        autoSyncEvaluated = true
+        guard status.lastAnchorIndex != samples else { return }   // 記録が伸びていない
+        syncTime()
+        lastAction = "時刻を合わせました（自動）"
     }
 
     func erase() {
@@ -252,6 +272,7 @@ final class BLEManager: NSObject {
         }
         if s.sampleRate <= 0 { s.sampleRate = 52 }
         status = s
+        autoSyncTimeIfNeeded()
     }
 
     /// 吸い出しフレーム: 先頭 4 B が絶対サンプル番号、残りが 12 B/サンプル。
@@ -351,6 +372,7 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         self.peripheral = nil
         timeChar = nil; statusChar = nil; dataChar = nil; controlChar = nil
+        autoSyncEvaluated = false
         status = DeviceStatus()
         connection = .scanning
         scanIfReady()                       // 電源が入っていればすぐ繋ぎ直る
@@ -376,6 +398,7 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         guard let s = statusChar else { lastError = "本体の状態を読めません"; return }
         connection = .connected
+        autoSyncEvaluated = false           // 接続ごとに1回だけ判定する
         peripheral.setNotifyValue(true, for: s)   // 記録量・電池は本体から流れてくる
         peripheral.readValue(for: s)
     }
