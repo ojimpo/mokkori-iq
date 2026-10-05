@@ -8,3 +8,7 @@ data/brunner/
 
 # 目視確認用スクリーンショット (UITEST_SCREENSHOT_DIR の出力先)
 .shots/
+
+# Private A3 Arduino dependencies and generated build outputs
+.a3-tools/
+/build/

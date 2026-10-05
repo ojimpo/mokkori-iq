@@ -659,3 +659,22 @@ iPhone 実機も本体実機も同時に繋げる日だったのでまとめて�
 
 **未検証**: BLE 経由の吸い出し（macOS の TCC で Terminal.app からしか叩けない）。
 ただし BLE のフレーム組み立ては USB ダンプと `read_record()` を共有しているので、経路自体は同じコードを通る。
+
+## 2026-10-05
+
+### 21:30 UTC A3 dry-bench safe-startup review (local only)
+
+- Verified remote main at 2d62eabe; prepared local review/a3-safe-startup only. No push/PR/flashing or hardware operation
+- Added A3 D7 internal pull-up, UNKNOWN/settling policy, passive D2 wake, explicit motor-off sequencing and default compile-time motor lockout
+- Found Seeed 1.1.13 core all-HIGH output latches and variant P0.14 HIGH before setup. Added exact-hash private core patch and build/link guards; retained ~50mA selector input and continuous ADC-divider LOW
+- Added explicit RUN/STOP/STANDBY over BLE and USB for bench work. Detach from docked OFF wakes awake idle; powered-dock removal cancels pending sleep. No cold-boot/wake autologging, no autoerase, DET alone never stops logs
+- Added verified payload-first/magic-last append, storage-fault inhibition, bounds checks for corrupted compressed records, and defined unsigned shifts; flash/BLE formats unchanged
+- Host sanitizer/state/storage tests and original-session compression regressions recorded with the delivery. Physical bootloader, GPIO, charge current, ADC, sleep/current, contact, motor and battery acceptance remain open; see docs/a3/BRINGUP.md
+- This local task does not publish the repository/Cosense progress log
+
+### 21:48 UTC A3 firmware draft PR preparation
+
+- User requested the prepared firmware in the repository as a pull request; rechecked GitHub main remains `2d62eabe`
+- Reran the target build (146,516 bytes program / 25,524 bytes globals), host ASan/UBSan tests, exact-core patch guards and both captured-session codec regressions
+- Kept firmware behavior unchanged from the reviewed bundle. Added the README entry point and ignored private Arduino/build directories; no binary, CAD or purchase files are included
+- Draft review only. No merge, device flashing or hardware operation

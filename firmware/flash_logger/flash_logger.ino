@@ -5,6 +5,11 @@
  * collect real crotch-mounted swimming data (no host needed in the pool), then
  * retrieve it -- over BLE from the phone, or over USB at the desk.
  *
+ * A3 REVIEW OVERRIDE: boot/wake is idle; RUN explicitly arms append logging.
+ * DET alone never stops logs; VBUS pauses them. Motors are locked out by default.
+ * See docs/a3/BRINGUP.md before any hardware use.
+ *
+ * Original logger behavior (superseded by the A3 override below):
  * The mode follows USB VBUS *live* (no reset needed), which matches the
  * "swim a little -> plug into the laptop -> pull & clear -> swim again" loop:
  *   - USB unplugged (battery) -> LOG: append IMU samples to the flash.
@@ -48,6 +53,8 @@
 #include <bluefruit.h>
 #include "log_format.h"
 #include "log_codec.h"
+#include "a3_hardware.h"
+#include "a3_storage.h"
 
 // ---- sensor configuration (kept in sync with the on-flash data) -----------
 static const uint16_t ODR_HZ      = 52;      // sample rate
@@ -63,12 +70,13 @@ Adafruit_SPIFlash flash(&flashTransport);
 enum Mode { M_BOOT, M_CONSOLE, M_LOGGING, M_FULL };
 static Mode g_mode = M_BOOT;
 static bool g_flash_ok = false;
+static bool g_storage_fault = false;
 static bool g_imu_ok = false;
 static uint32_t g_jedec = 0;
 
 // --- USB VBUS: present means we're plugged into a host / charger -----------
 static bool vbus_present() {
-  return (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
+  return a3_raw_vbus(); // A3 D7 active-low input + conservative direct-USB inhibit
 }
 
 // --- battery gauge (XIAO nRF52840) -----------------------------------------
@@ -93,8 +101,8 @@ static const uint16_t VBAT_FULL_MV = 4150;      // charger tapers near 4.2V
 // the same channel just agree with each other (measured on hardware
 // 2026-07-31 -- the first guess, a too-short settle delay, was wrong).
 static uint16_t read_vbat_mv() {
-  pinMode(VBAT_ENABLE, OUTPUT);
-  digitalWrite(VBAT_ENABLE, LOW);               // connect the divider
+  digitalWrite(VBAT_ENABLE, LOW);
+  pinMode(VBAT_ENABLE, OUTPUT);               // connect the divider
   pinMode(PIN_VBAT, INPUT);
   analogReference(AR_INTERNAL_3_0);
   analogReadResolution(12);
@@ -103,7 +111,8 @@ static uint16_t read_vbat_mv() {
   for (int i = 0; i < 4; i++) (void)analogRead(PIN_VBAT);   // discard
   uint32_t acc = 0;
   for (int i = 0; i < 32; i++) acc += analogRead(PIN_VBAT);
-  digitalWrite(VBAT_ENABLE, HIGH);              // disconnect (stop the leak)
+  // A3: keep LOW continuously, including charging and System OFF.
+  // HIGH can expose P0.31 to an unsafe voltage (Seeed charging warning).
   analogSampleTime(3);                           // leave the default for others
   float raw = acc / 32.0f;
   return (uint16_t)(raw * ADC_REF_MV / ADC_FULL * VBAT_DIVIDER + 0.5f);
@@ -146,23 +155,10 @@ static bool battery_charging(uint16_t mv) {
   return vbus_present() && mv < VBAT_FULL_MV;
 }
 
-// --- vibration motor (coin ERM, low-side BSS138 switch on D10) --------------
-// 3V3 -- motor(+) ... motor(-) -- BSS138 drain; source -- GND;
-// D10 --[100R..1k]-- gate, gate --[100k]-- GND (off while the pin floats);
-// 1N4148 flyback across the motor, cathode on the 3V3 side.
-// Motor: JYUDAUFU 10x2.7 mm ERM, 3 V rated / 80 mA max (works 3-4.2 V).
-static const uint8_t PIN_MOTOR = 10;             // D10, same header as 3V3/GND
-
-// While logging (= in the pool), buzz a short double pulse every N seconds so
-// we can tell whether the vibration is felt through the case + swimsuit while
-// actually swimming. The bursts land at known offsets from the session start,
-// so they are easy to identify (and ignore) in the IMU data. 0 disables.
-static const uint32_t BUZZ_PERIOD_S = 60;
-static const uint32_t BUZZ_ON_MS = 200, BUZZ_GAP_MS = 200;
-
-static void motor_set(uint8_t duty_pct) {        // 0 = off
-  analogWrite(PIN_MOTOR, (uint16_t)duty_pct * 255 / 100);
-}
+// --- A3 motor: separate 3.0V LDO on D0; PWM on D10 -------------------------
+// Dry-bench default is a compile-time motor lockout (A3_ENABLE_MOTOR=0).
+// No periodic buzz at startup: an explicit VIB command is the only motor path.
+static void motor_set(uint8_t duty_pct) { (void)a3_motor_set(duty_pct); }
 
 // Haptic feedback preferences pushed from the phone. Held in RAM only: the app
 // re-sends them on every connect, and the on-device causal wall counter that
@@ -185,39 +181,44 @@ static void led(bool r, bool g, bool b) {
 // 256-byte units, which is what the free-space arithmetic wants.
 static void scan_log_raw(uint32_t *out_pages, uint32_t *out_samples,
                          uint32_t *out_end, Anchor *out_last, uint32_t *out_anchors) {
-  uint32_t addr = 0, pages = 0, samples = 0, anchors = 0, size = flash.size();
+  uint32_t addr = 0, pages = 0, samples = 0, anchors = 0;
+  const uint32_t size = g_flash_ok ? flash.size() : 0;
   uint8_t hdr[24];
   while (addr + PAGE_SIZE <= size) {
-    flash.readBuffer(addr, hdr, sizeof(hdr));
+    if (flash.readBuffer(addr, hdr, sizeof(hdr)) != sizeof(hdr)) {
+      g_storage_fault = true; break;
+    }
     uint16_t magic, count;
-    memcpy(&magic, hdr, 2);
-    memcpy(&count, hdr + 2, 2);
+    memcpy(&magic,hdr,2); memcpy(&count,hdr+2,2);
     uint32_t step = PAGE_SIZE;
     if (magic == ANCHOR_MAGIC) {
-      anchors++;
-      if (out_last) {
-        memcpy(&out_last->epoch_ms, hdr + 8, 8);
-        memcpy(&out_last->sample_index, hdr + 16, 4);
-        memcpy(&out_last->millis_at_sync, hdr + 20, 4);
-      }
+      if (count != 0) { g_storage_fault = true; break; }
     } else if (magic == PAGE_MAGIC) {
-      if (count == 0 || count > SAMPLES_PER_PAGE) break;   // corrupt -> stop
-      samples += count;
+      if (count == 0 || count > SAMPLES_PER_PAGE) { g_storage_fault = true; break; }
     } else if (magic == MK_MAGIC_RICE) {
-      if (count == 0 || count > MK_MAX_SAMPLES) break;     // corrupt -> stop
-      step = (uint32_t)mk_record_units(hdr) * MK_UNIT;
-      samples += count;
+      if (count == 0 || count > MK_MAX_SAMPLES || hdr[7] == 0 || hdr[7] > MK_UNITS || hdr[6] > 15) {
+        g_storage_fault = true; break;
+      }
+      step = (uint32_t)hdr[7] * MK_UNIT;
     } else {
-      break;                                     // erased / end of log
+      for (unsigned i=0;i<sizeof(hdr);++i) if (hdr[i] != 0xFF) g_storage_fault = true;
+      break; // only erased headers are normal end-of-log
     }
-    if (addr + step > size) break;
-    pages += step / PAGE_SIZE;
-    addr += step;
+    if (step > size-addr) { g_storage_fault = true; break; }
+    if (magic == ANCHOR_MAGIC) {
+      ++anchors;
+      if (out_last) {
+        memcpy(&out_last->epoch_ms,hdr+8,8);
+        memcpy(&out_last->sample_index,hdr+16,4);
+        memcpy(&out_last->millis_at_sync,hdr+20,4);
+      }
+    } else samples += count;
+    pages += step/PAGE_SIZE; addr += step;
   }
-  if (out_pages) *out_pages = pages;
-  if (out_samples) *out_samples = samples;
-  if (out_end) *out_end = addr;
-  if (out_anchors) *out_anchors = anchors;
+  if (out_pages) *out_pages=pages;
+  if (out_samples) *out_samples=samples;
+  if (out_end) *out_end=addr;
+  if (out_anchors) *out_anchors=anchors;
 }
 
 // Scanning walks every used page, so a full flash costs ~8k reads. The BLE
@@ -274,7 +275,7 @@ static uint32_t capacity_samples() {
 static bool append_anchor(uint64_t epoch_ms) {
   uint32_t pages, samples, addr;
   scan_log(&pages, &samples, &addr, NULL, NULL);
-  if (addr + PAGE_SIZE > flash.size()) return false;
+  if (!g_flash_ok || g_storage_fault || addr + PAGE_SIZE > flash.size()) return false;
 
   uint8_t buf[PAGE_SIZE];
   memset(buf, 0, PAGE_SIZE);
@@ -286,7 +287,9 @@ static bool append_anchor(uint64_t epoch_ms) {
   memcpy(buf + 8, &epoch_ms, 8);
   memcpy(buf + 16, &samples, 4);
   memcpy(buf + 20, &ms, 4);
-  flash.writeBuffer(addr, buf, PAGE_SIZE);
+  if (!a3::append_checked(flash, addr, buf, PAGE_SIZE)) {
+    g_storage_fault = true; scan_invalidate(); return false;
+  }
   scan_invalidate();
   return true;
 }
@@ -326,7 +329,7 @@ static void print_info() {
   uint32_t pages, samples, anchors, end;
   scan_log(&pages, &samples, &end, NULL, &anchors);
   float secs = (float)samples / (float)ODR_HZ;
-  Serial.println("# mokkori flash logger v3 (compressed)");
+  Serial.println("# mokkori flash logger A3 dry-bench review (compressed)");
   Serial.print("# odr_hz="); Serial.print(ODR_HZ);
   Serial.print(" accel_fs_g="); Serial.print(ACCEL_FS_G);
   Serial.print(" gyro_fs_dps="); Serial.println(GYRO_FS_DPS);
@@ -362,12 +365,27 @@ static int16_t g_dec[MK_MAX_SAMPLES * MK_AXES];
 // past the record. The header's length field is read first so we only fetch
 // what the record actually occupies.
 static uint16_t read_record(uint32_t *addr) {
-  flash.readBuffer(*addr, g_rec, MK_UNIT);
-  uint32_t bytes = (uint32_t)mk_record_units(g_rec) * MK_UNIT;
-  if (bytes > MK_REC_BYTES) bytes = MK_REC_BYTES;              // corrupt header
-  if (bytes > MK_UNIT) flash.readBuffer(*addr + MK_UNIT, g_rec + MK_UNIT, bytes - MK_UNIT);
+  const uint32_t size = g_flash_ok ? flash.size() : 0;
+  if (*addr > size || MK_UNIT > size-*addr ||
+      flash.readBuffer(*addr, g_rec, MK_UNIT) != MK_UNIT) {
+    g_storage_fault = true; *addr = size; return 0;
+  }
+  uint16_t magic; memcpy(&magic,g_rec,2);
+  uint32_t bytes = MK_UNIT;
+  if (magic == MK_MAGIC_RICE) {
+    if (g_rec[7] == 0 || g_rec[7] > MK_UNITS || g_rec[6] > 15) {
+      g_storage_fault = true; *addr = size; return 0;
+    }
+    bytes = uint32_t(g_rec[7])*MK_UNIT;
+  }
+  if (bytes > size-*addr || (bytes > MK_UNIT &&
+      flash.readBuffer(*addr+MK_UNIT,g_rec+MK_UNIT,bytes-MK_UNIT) != bytes-MK_UNIT)) {
+    g_storage_fault = true; *addr = size; return 0;
+  }
   *addr += bytes;
-  return mk_decode_record(g_rec, g_dec, MK_MAX_SAMPLES);
+  const uint16_t n = mk_decode_record(g_rec,g_dec,MK_MAX_SAMPLES);
+  if (!n && magic != ANCHOR_MAGIC) g_storage_fault = true;
+  return n;
 }
 
 // --- stream the recorded samples as raw bytes ------------------------------
@@ -459,6 +477,14 @@ static volatile uint16_t g_req_vib_ms[VIB_MAX_PULSES];
 static volatile bool     g_req_anchor = false;
 static volatile uint64_t g_req_anchor_epoch = 0;
 static bool g_erasing = false;
+static volatile bool g_req_run = false, g_req_stop = false, g_req_standby = false;
+static bool g_standby_pending = false, g_standby_failed = false;
+static bool g_standby_saw_dock = false;
+static bool g_attach_wake_cycle = false;
+static const uint8_t OFF_FROM_UNDOCKED = 0xA4, OFF_FROM_DOCKED = 0xA5;
+static volatile bool g_req_status = false;
+static volatile bool g_req_dump = false;
+static volatile uint32_t g_req_dump_from = 0;
 
 // Dump-over-BLE state machine (driven from loop(), one record at a time).
 static bool     g_dump_active = false;
@@ -530,7 +556,7 @@ static void ble_connect_cb(uint16_t conn_handle) {
     c->requestConnectionParameter(12);
   }
   g_dump_active = false;
-  publish_status();
+  g_req_status = true; // only loop may scan flash, after logger has drained
 }
 
 // Frame = 4 B absolute sample index + N samples * 12 B, capped at one flash
@@ -569,6 +595,9 @@ static const uint8_t OP_ERASE      = 0x01;
 static const uint8_t OP_VIB        = 0x02;   // u8 pct, u8 n, n x u16 ms (on/off/on...)
 static const uint8_t OP_SET_HAPTIC = 0x03;   // u8 pct, 3 x u16 meters
 static const uint8_t OP_DUMP_START = 0x10;   // u32 start sample index
+static const uint8_t OP_RUN        = 0x20; // explicitly arm append logging (RAM only)
+static const uint8_t OP_STOP       = 0x21; // stop logging/motor, remain BLE idle
+static const uint8_t OP_STANDBY    = 0x22; // stop + D2 opposite-level System OFF
 static const uint8_t OP_DUMP_STOP  = 0x11;
 
 static void control_write_cb(uint16_t conn_hdl, BLECharacteristic *chr,
@@ -581,6 +610,7 @@ static void control_write_cb(uint16_t conn_hdl, BLECharacteristic *chr,
       g_req_erase = true;
       break;
     case OP_VIB:
+      if (g_req_stop || g_req_standby) break; // a queued stop dominates
       if (len >= 3) {
         uint8_t n = data[2];
         if (n > VIB_MAX_PULSES) n = VIB_MAX_PULSES;
@@ -592,6 +622,7 @@ static void control_write_cb(uint16_t conn_hdl, BLECharacteristic *chr,
           g_req_vib_ms[i] = ms;
         }
         g_req_vib_n = n;
+        g_a3_motor_stop_requested = false; // only a genuinely new command
         g_req_vib = true;
       }
       break;
@@ -601,20 +632,18 @@ static void control_write_cb(uint16_t conn_hdl, BLECharacteristic *chr,
         for (int i = 0; i < 3; i++) memcpy(&g_haptic_meters[i], data + 2 + i * 2, 2);
       }
       break;
+    case OP_RUN: g_req_run = true; break;
+    case OP_STOP: g_req_vib = false; g_a3_motor_stop_requested = true; g_req_stop = true; break;
+    case OP_STANDBY: g_req_vib = false; g_a3_motor_stop_requested = true; g_req_standby = true; break;
     case OP_DUMP_START: {
       uint32_t from = 0;
       if (len >= 5) memcpy(&from, data + 1, 4);
-      update_frame_size();
-      scan_log(NULL, NULL, &g_dump_end, NULL, NULL);
-      g_dump_addr = 0;
-      g_dump_abs = 0;
-      g_dump_off = 0;
-      g_dump_have = 0;
-      g_dump_skip_to = from;
-      g_dump_active = true;
+      g_req_dump_from = from;
+      g_req_dump = true; // scan/initialize only after the log flush in loop()
       break;
     }
     case OP_DUMP_STOP:
+      g_req_dump = false;
       g_dump_active = false;
       break;
   }
@@ -734,7 +763,9 @@ static bool flush_records(uint32_t *addr, uint16_t *seq, bool drain) {
     if (*addr + MK_REC_BYTES > size) return false;
     uint16_t n = mk_encode_record(g_rec, g_log_buf, g_log_n, *seq, MK_DROP_BITS);
     if (n == 0) return false;
-    flash.writeBuffer(*addr, g_rec, MK_REC_BYTES);
+    if (g_storage_fault || !a3::append_checked(flash, *addr, g_rec, MK_REC_BYTES)) {
+      g_storage_fault = true; return false; // retain unwritten RAM tail for diagnosis
+    }
     *addr += MK_REC_BYTES;
     *seq = (uint16_t)(*seq + MK_UNITS);
     g_log_n = (uint16_t)(g_log_n - n);
@@ -752,29 +783,22 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
   uint32_t size = flash.size();
   uint16_t seq = (uint16_t)pages;
 
-  g_log_n = 0;                                   // anything left is unwritable
+  if (!g_flash_ok || g_storage_fault) return true;
+  g_log_n = 0;
   uint32_t n_total = 0;
 
   const uint32_t period_us = 1000000UL / ODR_HZ;
   uint32_t t0 = millis();
   uint32_t next_us = micros();
   bool full = false;
-  bool buzzing = false;
 
   for (;;) {
     if (addr + MK_REC_BYTES > size) { full = true; break; }
     if (max_ms && (millis() - t0) >= max_ms) break;
-    if (stop_on_vbus && vbus_present()) break;
+    a3_poll();
+    if (stop_on_vbus && (!g_a3.normal_log_allowed() || g_req_stop || g_req_standby)) break;
+    if (g_a3_io_fault) break;
     if (g_conn != BLE_CONN_HANDLE_INVALID) break;  // phone is talking to us
-
-    // Periodic feel-test double pulse, non-blocking so sample pacing holds.
-    if (BUZZ_PERIOD_S) {
-      uint32_t ph = (millis() - t0) % (BUZZ_PERIOD_S * 1000UL);
-      bool on = (ph < BUZZ_ON_MS) ||
-                (ph >= BUZZ_ON_MS + BUZZ_GAP_MS &&
-                 ph < 2 * BUZZ_ON_MS + BUZZ_GAP_MS);
-      if (on != buzzing) { buzzing = on; motor_set(on ? 100 : 0); }
-    }
 
     uint32_t now = micros();
     if ((int32_t)(now - next_us) < 0) { yield(); continue; }  // let BLE run
@@ -802,22 +826,26 @@ static bool log_session(uint32_t max_ms, bool stop_on_vbus) {
 
   motor_set(0);                                  // never leave the motor on
   if (!flush_records(&addr, &seq, true)) full = true;   // drain the tail
-  g_log_n = 0;
+  if (!g_storage_fault) g_log_n = 0;
   scan_invalidate();
   return full;
 }
 
 static void print_help() {
   Serial.println("# commands: INFO | DUMP | TIMES | TIME <epoch_ms> | ERASE | "
-                 "TESTLOG <sec> | VIB [ms] [pct] | HELP");
+                 "TESTLOG <sec> | VIB [ms] [pct] | RUN | STOP | STANDBY | SAFETY | HELP");
 }
 
 static void do_erase() {
+  motor_set(0);
+  if (!g_flash_ok) return;
   led(0, 0, 1);                                  // blue: erasing
   g_erasing = true;
   publish_status();
-  flash.eraseChip();
+  const bool erased = flash.eraseChip(); // still reachable only by explicit ERASE
   flash.waitUntilReady();
+  g_storage_fault = !erased;
+  if (erased) g_log_n = 0;
   scan_invalidate();
   g_erasing = false;
   publish_status();
@@ -825,7 +853,31 @@ static void do_erase() {
 }
 
 static void handle_command(char *line) {
-  if (strncmp(line, "INFO", 4) == 0) {
+  if (strcmp(line, "RUN") == 0) {
+    g_a3.run_requested = true; g_standby_pending = false; g_attach_wake_cycle = false;
+    Serial.println("OK RUN armed; append only after VBUS absent; reset clears arm");
+  } else if (strcmp(line, "STOP") == 0) {
+    g_a3.run_requested = false; g_standby_pending = false; g_attach_wake_cycle = false;
+    motor_set(0); Serial.println("OK STOP; BLE idle");
+  } else if (strcmp(line, "STANDBY") == 0) {
+    g_a3.run_requested = false; g_standby_pending = true; g_standby_failed = false;
+    g_standby_saw_dock = g_a3.det.stable == a3::Level::High;
+    motor_set(0); Serial.println("OK STANDBY pending; unplug VBUS before OFF");
+  } else if (strcmp(line, "SAFETY") == 0) {
+    a3_poll();
+    Serial.print("# A3 dry-bench motor_enabled="); Serial.print(A3_ENABLE_MOTOR);
+    Serial.print(" io_fault="); Serial.print(g_a3_io_fault);
+    Serial.print(" storage_fault="); Serial.print(g_storage_fault);
+    Serial.print(" reset_reason=0x"); Serial.println(g_a3_reset_reason, HEX);
+    Serial.print("# raw_vbus="); Serial.print(g_a3.raw_vbus);
+    Serial.print(" raw_det="); Serial.print(g_a3.raw_det);
+    Serial.print(" vbus_state="); Serial.print((unsigned)g_a3.vbus.stable);
+    Serial.print(" det_state="); Serial.print((unsigned)g_a3.det.stable);
+    Serial.print(" run_armed="); Serial.print(g_a3.run_requested);
+    Serial.print(" standby_failed="); Serial.println(g_standby_failed);
+    Serial.println("# states: 0=UNKNOWN 1=LOW 2=HIGH; DET is not dry-contact proof");
+    Serial.println("OK");
+  } else if (strncmp(line, "INFO", 4) == 0) {
     print_info();
   } else if (strncmp(line, "DUMP", 4) == 0) {
     dump_log();
@@ -848,7 +900,7 @@ static void handle_command(char *line) {
     Serial.println(append_anchor(epoch_ms) ? "OK" : "# flash full");
   } else if (strncmp(line, "ERASE", 5) == 0) {
     do_erase();
-    Serial.println("ERASED");
+    Serial.println(g_storage_fault ? "# ERASE failed" : "ERASED");
   } else if (strncmp(line, "VIB", 3) == 0) {
     int ms = 0, pct = 0;
     sscanf(line + 3, "%d %d", &ms, &pct);
@@ -856,14 +908,21 @@ static void handle_command(char *line) {
     if (pct <= 0 || pct > 100) pct = 100;
     Serial.print("# vib "); Serial.print(ms);
     Serial.print("ms "); Serial.print(pct); Serial.println("%");
-    motor_set((uint8_t)pct);
-    delay((uint32_t)ms);
+    g_a3_motor_stop_requested = false; // fresh explicit bench request
+    if (!a3_motor_set((uint8_t)pct)) {
+      Serial.println("# VIB inhibited: dry-bench lockout or unsafe/unknown inputs"); return;
+    }
+    (void)a3_motor_delay((uint32_t)ms);
     motor_set(0);
     Serial.println("OK");
   } else if (strncmp(line, "TESTLOG", 7) == 0) {
     int sec = atoi(line + 7);
     if (sec <= 0) sec = 5;
     Serial.print("# logging "); Serial.print(sec); Serial.println("s ...");
+    if (!g_flash_ok || !g_imu_ok || g_a3_io_fault || g_storage_fault) {
+      Serial.println("# TESTLOG blocked: hardware initialization fault"); return;
+    }
+    // Explicit bench-only append exception on USB; motors remain locked out.
     log_session((uint32_t)sec * 1000UL, false);
     led(1, 0, 0);
     print_info();
@@ -881,7 +940,7 @@ static void enter_console() {
   g_mode = M_CONSOLE;
   led(1, 0, 0);                                  // red: console / idle
   cmd_len = 0;
-  Serial.println("# mokkori flash logger v3 (CONSOLE -- on USB)");
+  Serial.println("# mokkori flash logger A3 dry-bench (CONSOLE -- VBUS present)");
   if (!g_imu_ok) Serial.println("# WARN: IMU init failed");
   if (!g_flash_ok) Serial.println("# WARN: flash init failed");
   print_help();
@@ -889,12 +948,15 @@ static void enter_console() {
 }
 
 void setup() {
+  a3_begin();
+  const uint32_t off_token = NRF_POWER->GPREGRET2;
+  NRF_POWER->GPREGRET2 = 0;
+  g_attach_wake_cycle = (g_a3_reset_reason & POWER_RESETREAS_OFF_Msk) &&
+    off_token == OFF_FROM_UNDOCKED;
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_BLUE, OUTPUT);
   led(0, 0, 0);
-  pinMode(PIN_MOTOR, OUTPUT);
-  digitalWrite(PIN_MOTOR, LOW);                  // motor off until asked
 
   Serial.begin(115200);
 
@@ -921,11 +983,30 @@ void setup() {
 
   ble_begin();
 
-  // Mode is decided live in loop() from VBUS, so plug/unplug just works.
+  // A3 always boots idle. Explicit RUN arms append logging in this boot only.
 }
 
 // Work requested over BLE, run here where blocking is safe.
 static void service_requests() {
+  if (g_req_run) {
+    g_req_run = false; g_a3.run_requested = true;
+    g_standby_pending = false; g_attach_wake_cycle = false;
+  }
+  if (g_req_stop || g_req_standby) {
+    g_a3.run_requested = false; g_req_vib = false; motor_set(0);
+    g_standby_pending = g_req_standby; g_standby_failed = false;
+    g_standby_saw_dock = g_a3.det.stable == a3::Level::High;
+    g_attach_wake_cycle = false; g_req_stop = false; g_req_standby = false;
+  }
+  if (g_req_status) { g_req_status = false; publish_status(); }
+  if (g_req_dump && g_flash_ok) {
+    g_req_dump = false;
+    update_frame_size();
+    scan_log(NULL, NULL, &g_dump_end, NULL, NULL);
+    g_dump_addr = 0; g_dump_abs = 0; g_dump_off = 0; g_dump_have = 0;
+    g_dump_skip_to = g_req_dump_from;
+    g_dump_active = true;
+  }
   if (g_req_anchor) {
     g_req_anchor = false;
     append_anchor(g_req_anchor_epoch);
@@ -939,20 +1020,101 @@ static void service_requests() {
   }
   if (g_req_vib) {
     g_req_vib = false;
+    if (!A3_ENABLE_MOTOR || g_a3_motor_stop_requested) { motor_set(0); return; }
     uint8_t pct = g_req_vib_pct ? g_req_vib_pct : 100;
     uint8_t n = g_req_vib_n ? g_req_vib_n : 1;
     for (uint8_t i = 0; i < n; i++) {
       uint16_t ms = g_req_vib_ms[i] ? g_req_vib_ms[i] : 200;
       if (ms > 3000) ms = 3000;
-      motor_set((i % 2 == 0) ? pct : 0);       // even = on, odd = the gap
-      delay(ms);
+      if (!a3_motor_set((i % 2 == 0) ? pct : 0)) break;
+      if (!a3_motor_delay(ms)) break;
     }
     motor_set(0);
   }
 }
 
+static bool write_off_token(uint8_t token) {
+  uint8_t enabled = 0;
+  if (sd_softdevice_is_enabled(&enabled) != NRF_SUCCESS) return false;
+  if (!enabled) { NRF_POWER->GPREGRET2 = token; return true; }
+  if (sd_power_gpregret_clr(1, 0xFF) != NRF_SUCCESS) return false;
+  return sd_power_gpregret_set(1, token) == NRF_SUCCESS;
+}
+
+// Returns only when preconditions changed or OFF failed. Never restart motors.
+static void try_standby() {
+  a3_poll();
+  if (!g_a3.can_sleep() || g_storage_fault || g_standby_failed || g_conn != BLE_CONN_HANDLE_INVALID) return;
+  motor_set(0);
+  if (g_flash_ok) flash.waitUntilReady(); // no logging buffer remains in loop()
+  a3_checked_delay(100); // provisional motor coast-down delay, qualify physically
+  a3_poll();
+  if (!g_a3.can_sleep() || g_conn != BLE_CONN_HANDLE_INVALID ||
+      g_req_run || g_req_stop || g_req_standby || g_req_dump || g_req_anchor || g_req_erase) return;
+  const bool wake_high = g_a3.wake_high();
+  nrf_gpio_cfg_input(A3_DET, NRF_GPIO_PIN_NOPULL); // disable old sense
+  NRF_P0->LATCH = (1UL << 28); // clear only our latch (write one)
+  NRF_GPIOTE->EVENTS_PORT = 0;
+  nrf_gpio_cfg_sense_input(A3_DET, NRF_GPIO_PIN_NOPULL,
+    wake_high ? NRF_GPIO_PIN_SENSE_HIGH : NRF_GPIO_PIN_SENSE_LOW);
+  __DSB();
+  if (a3_raw_vbus() || bool(nrf_gpio_pin_read(A3_DET)) == wake_high ||
+      (NRF_P0->LATCH & (1UL << 28))) {
+    nrf_gpio_cfg_input(A3_DET, NRF_GPIO_PIN_NOPULL);
+    return; // raced an edge: stay awake; debounce again
+  }
+  if (g_conn != BLE_CONN_HANDLE_INVALID) Bluefruit.disconnect(g_conn);
+  Bluefruit.Advertising.restartOnDisconnect(false);
+  Bluefruit.Advertising.stop();
+  led(0,0,0);
+#ifdef PIN_LSM6DS3TR_C_POWER
+  digitalWrite(PIN_LSM6DS3TR_C_POWER, LOW);
+#endif
+  motor_set(0);
+  if (!write_off_token(wake_high ? OFF_FROM_UNDOCKED : OFF_FROM_DOCKED)) {
+    g_standby_failed = true; g_standby_pending = false;
+    nrf_gpio_cfg_input(A3_DET, NRF_GPIO_PIN_NOPULL);
+    return;
+  }
+  // Final level check after peripheral cleanup, before entering OFF.
+  if (a3_raw_vbus() || bool(nrf_gpio_pin_read(A3_DET)) == wake_high) {
+    (void)write_off_token(0);
+    NVIC_SystemReset(); // reinitialize the stopped peripherals; boots safely idle
+    return;
+  }
+  uint8_t enabled = 0;
+  uint32_t result = sd_softdevice_is_enabled(&enabled);
+  if (result == NRF_SUCCESS && enabled) result = sd_power_system_off();
+  else if (result == NRF_SUCCESS) { NRF_POWER->SYSTEMOFF = 1; __DSB(); }
+  // An error or debug-emulated OFF is not success. Remain inhibited.
+  (void)result;
+  (void)write_off_token(0);
+  g_standby_failed = true; g_standby_pending = false;
+  g_a3.run_requested = false;
+  nrf_gpio_cfg_input(A3_DET, NRF_GPIO_PIN_NOPULL);
+  motor_set(0);
+}
+
 void loop() {
+  // OFF failure is reset-required: peripherals may already be shut down.
+  if (g_standby_failed) { a3_motor_off(); delay(10); return; }
+  a3_poll();
   service_requests();
+  // An OFF-undocked attach wake completes the attach/remove standby cycle.
+  // It is NOT permission to start logging. Persistent wet DET can do this too.
+  if (g_attach_wake_cycle && g_a3.det.stable != a3::Level::Unknown) {
+    if (g_a3.det.stable == a3::Level::High) {
+      g_standby_pending = true; g_standby_saw_dock = true;
+    }
+    g_attach_wake_cycle = false;
+  }
+  if (g_standby_pending) {
+    if (g_a3.det.stable == a3::Level::High) g_standby_saw_dock = true;
+    if (a3::detached_after_dock(g_standby_saw_dock, g_a3.det.stable)) {
+      g_standby_pending = false; // powered-dock removal leaves the MCU awake
+    } else try_standby();
+  }
+  if (g_standby_failed) { motor_set(0); delay(10); return; }
 
   // A connected phone owns the device: pause logging, serve BLE, keep the
   // status fresh so the app's gauges move while it watches.
@@ -987,10 +1149,13 @@ void loop() {
     }
   } else if (g_mode == M_FULL) {
     led(1, 0, 0); delay(200); led(0, 0, 0); delay(200);   // blink: flash full
-  } else {
+  } else if (g_a3.normal_log_allowed() && g_flash_ok && g_imu_ok && !g_storage_fault) {
     g_mode = M_LOGGING;
     led(0, 1, 0);
     bool full = log_session(0, true);            // until USB/BLE or full
     if (full) g_mode = M_FULL;
+  } else {
+    g_mode = M_CONSOLE; // safe BLE idle; cold boot never starts recording
+    motor_set(0); led(1,0,0); delay(5);
   }
 }
