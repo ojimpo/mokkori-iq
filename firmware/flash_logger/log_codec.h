@@ -112,7 +112,7 @@ static int mk_put_rice(mk_bw *w, uint32_t u, uint8_t k) {
 }
 
 static uint32_t mk_zigzag(int32_t d) {
-  return ((uint32_t)(d << 1)) ^ (uint32_t)(d >> 31);
+  return ((uint32_t)d << 1) ^ (uint32_t)(d >> 31);
 }
 
 static int32_t mk_unzigzag(uint32_t u) {
@@ -227,6 +227,8 @@ static uint16_t mk_decode_record(const uint8_t *rec, int16_t *out, uint16_t max_
   if (count < 1 || count > MK_MAX_SAMPLES || count > max_out) return 0;
 
   uint8_t drop = rec[6];
+  // A corrupt/torn header must not set a reader capacity beyond its buffer.
+  if (drop > 15 || rec[7] == 0 || rec[7] > MK_UNITS) return 0;
   uint32_t bytes = (uint32_t)mk_record_units(rec) * MK_UNIT;
   uint8_t k[MK_AXES] = {0, 0, 0, 0, 0, 0};
 
@@ -235,7 +237,7 @@ static uint16_t mk_decode_record(const uint8_t *rec, int16_t *out, uint16_t max_
     int16_t v;
     memcpy(&v, rec + 12 + a * 2, 2);
     prev[a] = v;
-    out[a] = (int16_t)((int32_t)v << drop);
+    out[a] = (int16_t)((uint32_t)(int32_t)v << drop);
   }
 
   mk_br r;
@@ -252,8 +254,9 @@ static uint16_t mk_decode_record(const uint8_t *rec, int16_t *out, uint16_t max_
       while (q < MK_ESC && mk_get_bits(&r, 1)) q++;   // unary, or MK_ESC = escape
       uint32_t u = (q >= MK_ESC) ? mk_get_bits(&r, MK_ESC_BITS)
                                  : ((q << k[a]) | (k[a] ? mk_get_bits(&r, k[a]) : 0u));
+      if (r.pos > r.cap) return 0; // incomplete/corrupt bitstream
       prev[a] += mk_unzigzag(u);
-      out[(uint32_t)i * MK_AXES + a] = (int16_t)(prev[a] << drop);
+      out[(uint32_t)i * MK_AXES + a] = (int16_t)((uint32_t)prev[a] << drop);
     }
   }
   return count;

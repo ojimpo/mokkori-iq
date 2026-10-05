@@ -48,6 +48,7 @@ UUID_CONTROL = BASE.format(5)
 
 OP_ERASE, OP_VIB, OP_SET_HAPTIC = 0x01, 0x02, 0x03
 OP_DUMP_START, OP_DUMP_STOP = 0x10, 0x11
+OP_RUN, OP_STOP, OP_STANDBY = 0x20, 0x21, 0x22
 
 FLAGS = [(0x01, "logging"), (0x02, "usb"), (0x04, "charging"), (0x08, "full"),
          (0x10, "erasing"), (0x20, "dumping"), (0x40, "imu_ok"),
@@ -170,6 +171,10 @@ async def main():
     ap.add_argument("--vib", nargs="*", metavar="MS PCT", type=int)
     ap.add_argument("--haptic", nargs=4, metavar=("PCT", "M1", "M2", "M3"), type=int)
     ap.add_argument("--pull", nargs="?", const="__AUTO__", metavar="PATH")
+    a3 = ap.add_mutually_exclusive_group()
+    a3.add_argument("--run", action="store_true", help="A3: arm append logging after disconnect and VBUS removal")
+    a3.add_argument("--stop", action="store_true", help="A3: stop logging/motor, remain BLE idle")
+    a3.add_argument("--standby", action="store_true", help="A3: request D2-wake standby after disconnect and VBUS removal")
     args = ap.parse_args()
 
     if args.scan:
@@ -180,6 +185,14 @@ async def main():
     dev = await find_device()
     print(f"connecting to {dev.name} ({dev.address})")
     async with BleakClient(dev) as client:
+        for requested, opcode, label in ((args.run, OP_RUN, "RUN"),
+                                          (args.stop, OP_STOP, "STOP"),
+                                          (args.standby, OP_STANDBY, "STANDBY")):
+            if requested:
+                await client.write_gatt_char(UUID_CONTROL, bytes([opcode]), response=True)
+                print(f"A3 {label} request acknowledged; disconnecting. Physical state is not verified.")
+                await asyncio.sleep(0.2)
+                return
         if args.sync:
             epoch_ms = int(time.time() * 1000)
             await client.write_gatt_char(UUID_TIME, struct.pack("<Q", epoch_ms),

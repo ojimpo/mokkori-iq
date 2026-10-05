@@ -191,8 +191,12 @@ def main():
     print(f"codec: record={lib.mk_rec_bytes()}B  "
           f"buffer {lib.mk_max_samples()} samples  drop_bits={drop}\n")
 
+    data = list(sessions())
+    if len(data) != len(SESSIONS):
+        print("FAIL: both original captured sessions are required; no empty/partial PASS")
+        return 1
     ok = True
-    for name, v in sessions():
+    for name, v in data:
         decoded, nbytes = roundtrip(lib, v, drop)
         expect = (v >> drop) << drop
         exact = np.array_equal(decoded, expect)
